@@ -83,30 +83,21 @@ def fetch_live_style_data(style_id):
             page_res = requests.get(page_url, headers=headers, timeout=10)
             if page_res.status_code == 200:
                 soup = BeautifulSoup(page_res.text, 'html.parser')
-                
-                # Meta Image
                 meta_img = soup.find("meta", property="og:image")
                 if meta_img and meta_img.get("content"):
                     data_out["image"] = meta_img["content"]
                 
-                # window.__myx JSON state se data extract karna
                 match = re.search(r'window\.__myx\s*=\s*(\{.*?\});?</script>', page_res.text, re.DOTALL)
                 if match:
                     pdp_data = json.loads(match.group(1)).get("pdpData", {})
-                    
-                    # Price from pdpData
                     if not data_out["price"]:
                         price = pdpData.get("price", {}).get("discounted") or pdpData.get("price", {}).get("mrp")
                         if price:
                             data_out["price"] = f"₹{price}"
-                            
-                    # Rating from pdpData
                     if not data_out["star"]:
                         rating = pdpData.get("ratings", {}).get("averageRating")
                         if rating:
                             data_out["star"] = str(rating)
-                            
-                    # Reviews from pdpData
                     if not data_out["reviews"]:
                         reviews = pdpData.get("ratings", {}).get("totalCount")
                         if reviews:
@@ -114,7 +105,6 @@ def fetch_live_style_data(style_id):
         except Exception as e:
             print(f"HTML scrape error: {e}")
 
-    # Fallback image agar kuch na mile
     if not data_out["image"]:
         data_out["image"] = f"https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/{style_id}/default/image.jpg"
         
@@ -189,7 +179,7 @@ if st.sidebar.button("🔄 Refresh & Clear Cache"):
 
 st.sidebar.markdown("---")
 
-# Add New Style ID Section in Sidebar with Robust Live Data Fetching
+# Add New Style ID Section in Sidebar
 st.sidebar.subheader("➕ Add New Style ID")
 new_style_input = st.sidebar.text_input("Enter Style ID or Link")
 if st.sidebar.button("Add to Google Sheet"):
@@ -206,6 +196,7 @@ if st.sidebar.button("Add to Google Sheet"):
                     
                     all_vals = sheet.get_all_values()
                     headers = all_vals[0] if all_vals else []
+                    today_str = datetime.datetime.now().strftime("%d/%m/%Y")
                     
                     style_col_idx = -1
                     for idx, h in enumerate(headers):
@@ -218,9 +209,8 @@ if st.sidebar.button("Add to Google Sheet"):
                         st.sidebar.warning(f"Style ID {style_id} pehle se sheet me maujood hai!")
                     else:
                         live_data = fetch_live_style_data(style_id)
-                        today_str = datetime.datetime.now().strftime("%d/%m/%Y")
-                        
                         new_row_dict = {}
+                        
                         for idx, h in enumerate(headers):
                             h_str = str(h).strip()
                             h_up = h_str.upper()
@@ -249,7 +239,7 @@ if st.sidebar.button("Add to Google Sheet"):
                         final_row = [new_row_dict.get(i, "") for i in range(len(headers))]
                         sheet.append_row(final_row)
                         
-                        st.sidebar.success(f"Style ID {style_id} live data ke sath successfully add ho gaya!")
+                        st.sidebar.success(f"Style ID {style_id} successfully add ho gaya!")
                         st.cache_data.clear()
                         st.rerun()
                 except Exception as e:
@@ -257,9 +247,9 @@ if st.sidebar.button("Add to Google Sheet"):
         else:
             st.sidebar.error("Kripya valid Style ID ya Link enter karein!")
 
-# Auto-fill missing today's data for existing rows
+# Auto-Fill Today's Missing Data (Purane aur naye sabhi styles ke liye)
 if st.sidebar.button("⚡ Auto-Fill Today's Missing Data"):
-    with st.spinner("Checking and filling missing today's data for existing styles..."):
+    with st.spinner("Checking and filling missing today's data..."):
         try:
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
             creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope) if os.path.exists("credentials.json") else ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
@@ -278,34 +268,47 @@ if st.sidebar.button("⚡ Auto-Fill Today's Missing Data"):
                     
             if style_col_idx != -1:
                 updates = []
+                # Cache fetched data per style ID to avoid redundant requests
+                fetched_cache = {}
+                
                 for row_idx, row in enumerate(all_vals[1:], start=2):
-                    style_id = row[style_col_idx].strip()
-                    if style_id:
+                    style_val = row[style_col_idx].strip()
+                    # Style ID extract karna (chahe number ho ya link)
+                    numbers = re.findall(r'\d+', style_val)
+                    if numbers:
+                        style_id = numbers[-1]
+                        
                         for col_idx, h in enumerate(headers):
                             h_str = str(h).strip()
-                            if today_str in h_str and (col_idx >= len(row) or not row[col_idx].strip()):
-                                live_data = fetch_live_style_data(style_id)
-                                h_up = h_str.upper()
-                                val = live_data["price"]
-                                if "STAR" in h_up:
-                                    val = live_data["star"]
-                                elif "REVIEW" in h_up:
-                                    val = live_data["reviews"]
-                                elif "OUT OF STOCK" in h_up:
-                                    val = live_data["oos"]
-                                elif "SELLER" in h_up:
-                                    val = live_data["seller"]
-                                
-                                if val:
-                                    updates.append(gspread.Cell(row_idx, col_idx + 1, val))
+                            # Check if header contains today's date and cell is empty
+                            if today_str in h_str:
+                                cell_val = row[col_idx] if col_idx < len(row) else ""
+                                if not cell_val.strip():
+                                    if style_id not in fetched_cache:
+                                        fetched_cache[style_id] = fetch_live_style_data(style_id)
                                     
+                                    live_data = fetched_cache[style_id]
+                                    h_up = h_str.upper()
+                                    val = live_data["price"]
+                                    if "STAR" in h_up:
+                                        val = live_data["star"]
+                                    elif "REVIEW" in h_up:
+                                        val = live_data["reviews"]
+                                    elif "OUT OF STOCK" in h_up:
+                                        val = live_data["oos"]
+                                    elif "SELLER" in h_up:
+                                        val = live_data["seller"]
+                                    
+                                    if val:
+                                        updates.append(gspread.Cell(row_idx, col_idx + 1, val))
+                                        
                 if updates:
                     sheet.update_cells(updates)
-                    st.sidebar.success(f"Total {len(updates)} missing fields aaj ki date ke liye update kar diye gaye hain!")
+                    st.sidebar.success(f"Successfully updated {len(updates)} missing fields for today ({today_str})!")
                     st.cache_data.clear()
                     st.rerun()
                 else:
-                    st.sidebar.info("Sabhi existing styles me aaj ka data pehle se maujood hai ya fetch nahi ho paya.")
+                    st.sidebar.info("Aaj ka data sabhi styles me pehle se maujood hai!")
         except Exception as e:
             st.sidebar.error(f"Error auto-filling data: {e}")
 
