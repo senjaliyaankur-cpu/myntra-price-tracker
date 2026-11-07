@@ -1,0 +1,11 @@
+# Secrets - inhe kabhi GitHub par mat daalo
+credentials.json
+.streamlit/secrets.toml
+*.json.bak
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
