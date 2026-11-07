@@ -25,15 +25,23 @@ def load_data():
             creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
             client = gspread.authorize(creds)
         else:
+            st.error("Secrets ya credentials.json nahi mila!")
             return None
 
-        sheet = client.open(SHEET_NAME).sheet1
+        # Spreadsheet kholna
+        spreadsheet = client.open(SHEET_NAME)
+        # Pehli worksheet lena
+        sheet = spreadsheet.sheet1
         rows = sheet.get_all_values()
         
         if not rows or len(rows) < 2:
+            st.warning(f"Google Sheet '{SHEET_NAME}' khali hai ya usme sirf 1 row hai!")
             return None
 
         df = pd.DataFrame(rows[1:], columns=rows[0])
+        
+        # Strip spaces from column headers
+        df.columns = [str(c).strip() for c in df.columns]
         
         if df.empty:
             return None
@@ -47,7 +55,7 @@ def load_data():
 df = load_data()
 
 if df is None:
-    st.error("Google Sheet ('MYNTRA PRICE') load nahi ho payi. Kripya credentials check karein.")
+    st.error("⚠️ Google Sheet data load nahi ho paya! Kripya check karein ki Google Sheet ka naam bilkul exact **'MYNTRA PRICE'** hai aur usme data bhara hua hai.")
     st.stop()
 
 st.title("🛍️ Myntra Catalog & Price Tracker Dashboard")
@@ -105,3 +113,93 @@ if view_mode == "📊 Clean Price & Stock Table":
         
     if selected_date and selected_date != "All Dates":
         oos_col = f"{selected_date} OUT OF STOCK"
+        if oos_col in filtered_df.columns:
+            if stock_filter == "In Stock (NONE)":
+                filtered_df = filtered_df[filtered_df[oos_col] == "NONE"]
+            elif stock_filter == "Out of Stock (ALL)":
+                filtered_df = filtered_df[filtered_df[oos_col].astype(str).str.startswith("ALL")]
+
+    st.metric("Total Products Displayed", len(filtered_df))
+    
+    column_config = {}
+    if "PHOTO" in filtered_df.columns:
+        column_config["PHOTO"] = st.column_config.ImageColumn(
+            "Product Photo", help="Myntra Product Image", width="small"
+        )
+    
+    st.dataframe(
+        filtered_df, 
+        column_config=column_config,
+        use_container_width=True, 
+        height=600
+    )
+
+elif view_mode == "⭐ Top Rated Products":
+    st.subheader("⭐ Top Rated Products Leaderboard")
+    col1, col2 = st.columns(2)
+    with col1:
+        top_n = st.selectbox("Show Top", [10, 20, 50], index=0)
+    with col2:
+        min_rev = st.number_input("Minimum Reviews", min_value=0, value=10)
+        
+    if latest_date:
+        star_col = f"{latest_date} STAR"
+        rev_col = f"{latest_date} REVIEWS"
+        
+        if star_col in df.columns and rev_col in df.columns:
+            top_df = df.copy()
+            top_df[star_col] = pd.to_numeric(top_df[star_col], errors='coerce').fillna(0)
+            top_df[rev_col] = pd.to_numeric(top_df[rev_col], errors='coerce').fillna(0)
+            
+            top_df = top_df[(top_df[star_col] > 0) & (top_df[rev_col] >= min_rev)]
+            top_df = top_df.sort_values(by=[star_col, rev_col], ascending=[False, False]).head(top_n)
+            
+            column_config = {}
+            if "PHOTO" in top_df.columns:
+                column_config["PHOTO"] = st.column_config.ImageColumn("Product Photo", width="small")
+            
+            st.dataframe(top_df, column_config=column_config, use_container_width=True, height=500)
+
+elif view_mode == "📈 Product Trend Analysis":
+    st.subheader("📈 Style Price & Rating History Trend")
+    style_ids = df['STYLE ID'].astype(str).tolist() if 'STYLE ID' in df.columns else []
+    selected_style = st.selectbox("Select Style ID", style_ids)
+    
+    if selected_style:
+        prod_row = df[df['STYLE ID'].astype(str) == str(selected_style)]
+        if not prod_row.empty:
+            photo_url = prod_row['PHOTO'].values[0] if 'PHOTO' in prod_row.columns else ""
+            if photo_url and str(photo_url).startswith("http"):
+                st.image(str(photo_url), width=120)
+            
+            history_data = []
+            for d in dates:
+                p_col = d
+                s_col = f"{d} STAR"
+                r_col = f"{d} REVIEWS"
+                
+                price_val = prod_row[p_col].values[0] if p_col in prod_row.columns else None
+                star_val = prod_row[s_col].values[0] if prod_row.columns else None
+                rev_val = prod_row[r_col].values[0] if prod_row.columns else None
+                
+                p_num = float(re.sub(r'[^0-9.]', '', str(price_val))) if pd.notna(price_val) and re.sub(r'[^0-9.]', '', str(price_val)) else None
+                
+                history_data.append({
+                    "Date": d,
+                    "Price": p_num,
+                    "Star": pd.to_numeric(star_val, errors='coerce'),
+                    "Reviews": pd.to_numeric(rev_val, errors='coerce')
+                })
+                
+            hist_df = pd.DataFrame(history_data)
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("#### Price Trend (₹)")
+                if not hist_df['Price'].dropna().empty:
+                    st.line_chart(hist_df.set_index("Date")['Price'])
+            with col2:
+                st.markdown("#### Star Rating Trend (★)")
+                if not hist_df['Star'].dropna().empty:
+                    st.line_chart(hist_df.set_index("Date")['Star'])
+            st.markdown("#### Detailed History Table")
+            st.dataframe(hist_df, use_container_width=True)
