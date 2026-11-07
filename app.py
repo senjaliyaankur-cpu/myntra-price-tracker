@@ -4,33 +4,52 @@ import datetime
 import os
 import subprocess
 import re
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 st.set_page_config(page_title="Myntra Price & Stock Tracker", page_icon="🛍️", layout="wide")
 
-EXCEL_FILE = "MYNTRA PRICE.xlsx"
-CSV_File = "MYNTRA PRICE.csv"
+SHEET_NAME = "MYNTRA PRICE"
 PHOTO_DIR = "photos"
 
 @st.cache_data(ttl=60)
 def load_data():
-    if os.path.exists(EXCEL_FILE):
-        df = pd.read_excel(EXCEL_FILE, sheet_name=0)
-    elif os.path.exists(CSV_File):
-        df = pd.read_csv(CSV_File)
-    else:
-        return None
-    
-    # Clean up duplicate/extra PHOTO columns (like PHOTO.1, PHOTO.2, SOR TP.1, etc.)
-    drop_cols = [c for c in df.columns if 'PHOTO.' in str(c) or 'SOR TP.' in str(c)]
-    if drop_cols:
-        df = df.drop(columns=drop_cols)
+    try:
+        # Streamlit Cloud ke Secrets se credentials load karna
+        if "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+            client = gspread.authorize(creds)
+        elif os.path.exists("credentials.json"):
+            # Local PC ke liye credentials.json file
+            scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+            creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+            client = gspread.authorize(creds)
+        else:
+            return None
+
+        sheet = client.open(SHEET_NAME).sheet1
+        data = sheet.get_all_records()
+        df = pd.DataFrame(data)
         
-    return df
+        if df.empty:
+            return None
+
+        # Clean up duplicate/extra PHOTO columns (like PHOTO.1, PHOTO.2, SOR TP.1, etc.)
+        drop_cols = [c for c in df.columns if 'PHOTO.' in str(c) or 'SOR TP.' in str(c)]
+        if drop_cols:
+            df = df.drop(columns=drop_cols)
+            
+        return df
+    except Exception as e:
+        st.error(f"Google Sheet load karne me error aaya: {e}")
+        return None
 
 df = load_data()
 
 if df is None:
-    st.error("Data file (MYNTRA PRICE.xlsx) nahi mili!")
+    st.error("Google Sheet ('MYNTRA PRICE') ya credentials nahi mile! Kripya Streamlit Secrets check karein.")
     st.stop()
 
 st.title("🛍️ Myntra Catalog & Price Tracker Dashboard")
@@ -96,7 +115,6 @@ if view_mode == "📊 Clean Price & Stock Table":
 
     st.metric("Total Products Displayed", len(filtered_df))
     
-    # Display clean table without messy PHOTO.1 / PHOTO.2 columns
     st.dataframe(filtered_df, use_container_width=True, height=600)
 
 elif view_mode == "⭐ Top Rated Products":
@@ -123,7 +141,7 @@ elif view_mode == "⭐ Top Rated Products":
 
 elif view_mode == "📈 Product Trend Analysis":
     st.subheader("📈 Style Price & Rating History Trend")
-    style_ids = df['STYLE ID'].astype(str).tolist()
+    style_ids = df['STYLE ID'].astype(str).tolist() if 'STYLE ID' in df.columns else []
     selected_style = st.selectbox("Select Style ID", style_ids)
     
     if selected_style:
@@ -141,7 +159,7 @@ elif view_mode == "📈 Product Trend Analysis":
                 
                 price_val = prod_row[p_col].values[0] if p_col in prod_row.columns else None
                 star_val = prod_row[s_col].values[0] if s_col in prod_row.columns else None
-                rev_val = prod_row[r_col].values[0] if prod_row.columns else None
+                rev_val = prod_row[r_col].values[0] if r_col in prod_row.columns else None
                 
                 p_num = float(re.sub(r'[^0-9.]', '', str(price_val))) if pd.notna(price_val) and re.sub(r'[^0-9.]', '', str(price_val)) else None
                 
