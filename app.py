@@ -13,7 +13,6 @@ st.set_page_config(page_title="Myntra Price & Stock Tracker", page_icon="🛍️
 
 SHEET_NAME = "MYNTRA PRICE"
 
-# Credentials setup for subprocess
 if not os.path.exists("credentials.json") and "gcp_service_account" in st.secrets:
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
@@ -22,8 +21,8 @@ if not os.path.exists("credentials.json") and "gcp_service_account" in st.secret
     except Exception as e:
         st.error(f"Credentials file banane me error: {e}")
 
-# Cache ke bina direct data fetch function taaki instant updates dikhein
-def load_data_fresh():
+@st.cache_data(ttl=60)
+def load_data():
     try:
         if os.path.exists("credentials.json"):
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -41,7 +40,6 @@ def load_data_fresh():
 
         df = pd.DataFrame(rows[1:], columns=rows[0])
         
-        # Duplicate columns handle karna
         new_cols = []
         seen = {}
         for c in df.columns:
@@ -62,7 +60,7 @@ def load_data_fresh():
         st.error(f"Google Sheet load karne me error aaya: {e}")
         return None
 
-df = load_data_fresh()
+df = load_data()
 
 if df is None:
     st.error("Google Sheet ('MYNTRA PRICE') load nahi ho payi. Kripya credentials check karein.")
@@ -73,7 +71,20 @@ st.markdown("Aapke e-commerce products ka live tracking, price fluctuation, stoc
 
 st.sidebar.header("⚙️ Dashboard Controls")
 
-if st.sidebar.button("🔄 Refresh & Clear Cache", type="primary"):
+if st.sidebar.button("🔄 Run Tracker Script (Update Data)", type="primary"):
+    with st.spinner("Myntra se latest data aur images fetch ho rahi hain... Please wait..."):
+        try:
+            result = subprocess.run([sys.executable, "myntra_excel_tracker.py"], capture_output=True, text=True, timeout=120)
+            if result.returncode == 0:
+                st.sidebar.success("Data successfully update ho gaya!")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.sidebar.error(f"Error: {result.stderr}")
+        except Exception as e:
+            st.sidebar.error(f"Script run karne me dikkat aayi: {e}")
+
+if st.sidebar.button("🔄 Refresh & Clear Cache"):
     st.cache_data.clear()
     st.rerun()
 
@@ -122,18 +133,12 @@ if view_mode == "📊 Clean Price & Stock Table":
 
     st.metric("Total Products Displayed", len(filtered_df))
     
-    # Image column config setup
     column_config = {}
     for col in filtered_df.columns:
         if col.upper().strip() == "PHOTO" or col.upper().startswith("PHOTO_"):
             column_config[col] = st.column_config.ImageColumn("Product Photo", width="small")
     
-    st.dataframe(
-        filtered_df, 
-        column_config=column_config,
-        use_container_width=True, 
-        height=600
-    )
+    st.dataframe(filtered_df, column_config=column_config, use_container_width=True, height=600)
 
 elif view_mode == "⭐ Top Rated Products":
     st.subheader("⭐ Top Rated Products Leaderboard")
