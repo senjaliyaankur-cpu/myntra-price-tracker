@@ -38,11 +38,7 @@ def load_data():
         if df.empty:
             return None
 
-        # Clean up duplicate/extra PHOTO columns (like PHOTO.1, PHOTO.2, SOR TP.1, etc.)
-        drop_cols = [c for c in df.columns if 'PHOTO' in str(c).upper() or 'SOR TP' in str(c).upper()]
-        # Keep essential ones or drop duplicates cleanly
         df = df.loc[:, ~df.columns.duplicated()]
-        
         return df
     except Exception as e:
         st.error(f"Google Sheet load karne me error aaya: {e}")
@@ -51,7 +47,7 @@ def load_data():
 df = load_data()
 
 if df is None:
-    st.error("Google Sheet ('MYNTRA PRICE') load nahi ho payi. Kripya check karein.")
+    st.error("Google Sheet ('MYNTRA PRICE') load nahi ho payi. Kripya credentials check karein.")
     st.stop()
 
 st.title("🛍️ Myntra Catalog & Price Tracker Dashboard")
@@ -109,77 +105,3 @@ if view_mode == "📊 Clean Price & Stock Table":
         
     if selected_date and selected_date != "All Dates":
         oos_col = f"{selected_date} OUT OF STOCK"
-        if oos_col in filtered_df.columns:
-            if stock_filter == "In Stock (NONE)":
-                filtered_df = filtered_df[filtered_df[oos_col] == "NONE"]
-            elif stock_filter == "Out of Stock (ALL)":
-                filtered_df = filtered_df[filtered_df[oos_col].astype(str).str.startswith("ALL")]
-
-    st.metric("Total Products Displayed", len(filtered_df))
-    st.dataframe(filtered_df, use_container_width=True, height=600)
-
-elif view_mode == "⭐ Top Rated Products":
-    st.subheader("⭐ Top Rated Products Leaderboard")
-    col1, col2 = st.columns(2)
-    with col1:
-        top_n = st.selectbox("Show Top", [10, 20, 50], index=0)
-    with col2:
-        min_rev = st.number_input("Minimum Reviews", min_value=0, value=10)
-        
-    if latest_date:
-        star_col = f"{latest_date} STAR"
-        rev_col = f"{latest_date} REVIEWS"
-        
-        if star_col in df.columns and rev_col in df.columns:
-            top_df = df.copy()
-            top_df[star_col] = pd.to_numeric(top_df[star_col], errors='coerce').fillna(0)
-            top_df[rev_col] = pd.to_numeric(top_df[rev_col], errors='coerce').fillna(0)
-            
-            top_df = top_df[(top_df[star_col] > 0) & (top_df[rev_col] >= min_rev)]
-            top_df = top_df.sort_values(by=[star_col, rev_col], ascending=[False, False]).head(top_n)
-            
-            st.dataframe(top_df, use_container_width=True, height=500)
-
-elif view_mode == "📈 Product Trend Analysis":
-    st.subheader("📈 Style Price & Rating History Trend")
-    style_ids = df['STYLE ID'].astype(str).tolist() if 'STYLE ID' in df.columns else []
-    selected_style = st.selectbox("Select Style ID", style_ids)
-    
-    if selected_style:
-        prod_row = df[df['STYLE ID'].astype(str) == str(selected_style)]
-        if not prod_row.empty:
-            p_path = os.path.join(PHOTO_DIR, f"{selected_style}.jpg")
-            if os.path.exists(p_path):
-                st.image(p_path, width=120)
-                
-            history_data = []
-            for d in dates:
-                p_col = d
-                s_col = f"{d} STAR"
-                r_col = f"{d} REVIEWS"
-                
-                price_val = prod_row[p_col].values[0] if p_col in prod_row.columns else None
-                star_val = prod_row[s_col].values[0] if s_col in prod_row.columns else None
-                rev_val = prod_row[r_col].values[0] if prod_row.columns else None
-                
-                p_num = float(re.sub(r'[^0-9.]', '', str(price_val))) if pd.notna(price_val) and re.sub(r'[^0-9.]', '', str(price_val)) else None
-                
-                history_data.append({
-                    "Date": d,
-                    "Price": p_num,
-                    "Star": pd.to_numeric(star_val, errors='coerce'),
-                    "Reviews": pd.to_numeric(rev_val, errors='coerce')
-                })
-                
-            hist_df = pd.DataFrame(history_data)
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("#### Price Trend (₹)")
-                if not hist_df['Price'].dropna().empty:
-                    st.line_chart(hist_df.set_index("Date")['Price'])
-            with col2:
-                st.markdown("#### Star Rating Trend (★)")
-                if not hist_df['Star'].dropna().empty:
-                    st.line_chart(hist_df.set_index("Date")['Star'])
-            st.markdown("#### Detailed History Table")
-            st.dataframe(hist_df, use_container_width=True)
