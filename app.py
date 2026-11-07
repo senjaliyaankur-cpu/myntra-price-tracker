@@ -91,6 +91,55 @@ if st.sidebar.button("🔄 Refresh & Clear Cache"):
 
 st.sidebar.markdown("---")
 
+# Add New Style ID Section in Sidebar
+st.sidebar.subheader("➕ Add New Style ID")
+new_style_input = st.sidebar.text_input("Enter Style ID or Link")
+if st.sidebar.button("Add to Google Sheet"):
+    if new_style_input:
+        numbers = re.findall(r'\d+', new_style_input)
+        if numbers:
+            style_id = numbers[-1]
+            with st.spinner(f"Adding Style ID {style_id} to Google Sheet..."):
+                try:
+                    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+                    creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope) if os.path.exists("credentials.json") else ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
+                    client = gspread.authorize(creds)
+                    sheet = client.open(SHEET_NAME).sheet1
+                    
+                    # Check if style already exists
+                    all_vals = sheet.get_all_values()
+                    headers = all_vals[0] if all_vals else []
+                    
+                    style_col_idx = -1
+                    link_col_idx = -1
+                    for idx, h in enumerate(headers):
+                        h_up = str(h).upper()
+                        if "STYLE ID" in h_up and "LINK" not in h_up:
+                            style_col_idx = idx
+                        elif "LINK" in h_up:
+                            link_col_idx = idx
+                            
+                    existing_styles = [str(row[style_col_idx]) for row in all_vals[1:]] if style_col_idx != -1 and len(all_vals) > 1 else []
+                    
+                    if style_id in existing_styles:
+                        st.sidebar.warning(f"Style ID {style_id} pehle se sheet me maujood hai!")
+                    else:
+                        # Nayi row create karna
+                        new_row = [""] * len(headers)
+                        if style_col_idx != -1:
+                            new_row[style_col_idx] = str(style_id)
+                        if link_col_idx != -1:
+                            new_row[link_col_idx] = f"https://www.myntra.com/{style_id}"
+                            
+                        sheet.append_row(new_row)
+                        st.sidebar.success(f"Style ID {style_id} successfully add ho gaya!")
+                        st.cache_data.clear()
+                        st.rerun()
+                except Exception as e:
+                    st.sidebar.error(f"Error adding style: {e}")
+        else:
+            st.sidebar.error("Kripya valid Style ID ya Link enter karein!")
+
 cols = list(df.columns)
 dates = []
 
@@ -109,7 +158,6 @@ view_mode = st.sidebar.radio("Navigation", ["📊 Clean Price & Stock Table", "�
 if view_mode == "📊 Clean Price & Stock Table":
     st.subheader("📊 Clean Product Price & History Table")
     
-    # 4 columns for main screen filters side-by-side
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         search_query = st.text_input("🔍 Search (Style ID, Seller, Size, etc.)", "")
