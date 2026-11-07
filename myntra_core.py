@@ -29,24 +29,55 @@ HEADERS = {
 IMG_PREFIX = "https://assets.myntassets.com/h_720,q_90,w_540/v1/"
 
 
+def _proxies():
+    """Myntra cloud servers ko block kare to India proxy yahan se lagta hai.
+    GitHub secret / Streamlit secret / environment me MYNTRA_PROXY = http://user:pass@host:port"""
+    p = (os.environ.get("MYNTRA_PROXY") or "").strip()
+    return {"http": p, "https": p} if p else None
+
+
 # ======================= Google Sheet =======================
 
 def today_str():
     return datetime.datetime.now(TZ).strftime("%d/%m/%Y")
 
 
+def _local_secrets_toml():
+    """[gcp_service_account] ka data: GCP_SECRETS_TOML env var (GitHub Actions) ya 'secrets.toml' file se"""
+    raw = os.environ.get("GCP_SECRETS_TOML")
+    if raw and raw.strip():
+        import tomllib
+        info = tomllib.loads(raw).get("gcp_service_account")
+        if info:
+            return dict(info)
+    for path in ("secrets.toml", os.path.join(".streamlit", "secrets.toml")):
+        if os.path.exists(path):
+            try:
+                import tomllib
+            except ImportError:
+                raise RuntimeError("secrets.toml padhne ke liye Python 3.11 ya naya chahiye.")
+            with open(path, "rb") as f:
+                info = tomllib.load(f).get("gcp_service_account")
+            if info:
+                return dict(info)
+    return None
+
+
 def get_client(secret_info=None):
     """Service account se gspread client banata hai.
-    Order: 1) secret_info (Streamlit secrets)  2) credentials.json file  3) GCP_SERVICE_ACCOUNT env var"""
+    Order: 1) secret_info (Streamlit secrets)  2) credentials.json  3) secrets.toml  4) GCP_SERVICE_ACCOUNT env var"""
     if secret_info:
         return gspread.service_account_from_dict(dict(secret_info))
     if os.path.exists("credentials.json"):
         return gspread.service_account(filename="credentials.json")
+    info = _local_secrets_toml()
+    if info:
+        return gspread.service_account_from_dict(info)
     raw = os.environ.get("GCP_SERVICE_ACCOUNT")
     if raw:
         return gspread.service_account_from_dict(json.loads(raw))
-    raise RuntimeError("Google credentials nahi mile (Streamlit secrets 'gcp_service_account', "
-                       "credentials.json ya GCP_SERVICE_ACCOUNT me se kuch bhi set karo).")
+    raise RuntimeError("Google credentials nahi mile. GitHub secret 'GCP_SECRETS_TOML' me Streamlit Secrets ka "
+                       "text paste karo (ya credentials.json / secrets.toml rakho).")
 
 
 def open_sheet(secret_info=None):
@@ -216,7 +247,7 @@ def fetch_style(style_id):
         for url in (f"https://www.myntra.com/gateway/v2/product/{style_id}",
                     f"https://www.myntra.com/{style_id}"):
             try:
-                r = requests.get(url, headers=HEADERS, timeout=15)
+                r = requests.get(url, headers=HEADERS, timeout=20, proxies=_proxies())
             except requests.RequestException:
                 out["status"] = "Error Fetching"
                 continue
