@@ -15,14 +15,12 @@ PHOTO_DIR = "photos"
 @st.cache_data(ttl=60)
 def load_data():
     try:
-        # Streamlit Cloud ke Secrets se credentials load karna
         if "gcp_service_account" in st.secrets:
             creds_dict = dict(st.secrets["gcp_service_account"])
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
             creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
             client = gspread.authorize(creds)
         elif os.path.exists("credentials.json"):
-            # Local PC ke liye credentials.json file
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
             creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
             client = gspread.authorize(creds)
@@ -30,17 +28,21 @@ def load_data():
             return None
 
         sheet = client.open(SHEET_NAME).sheet1
-        data = sheet.get_all_records()
-        df = pd.DataFrame(data)
+        rows = sheet.get_all_values()
+        
+        if not rows or len(rows) < 2:
+            return None
+
+        df = pd.DataFrame(rows[1:], columns=rows[0])
         
         if df.empty:
             return None
 
         # Clean up duplicate/extra PHOTO columns (like PHOTO.1, PHOTO.2, SOR TP.1, etc.)
-        drop_cols = [c for c in df.columns if 'PHOTO.' in str(c) or 'SOR TP.' in str(c)]
-        if drop_cols:
-            df = df.drop(columns=drop_cols)
-            
+        drop_cols = [c for c in df.columns if 'PHOTO' in str(c).upper() or 'SOR TP' in str(c).upper()]
+        # Keep essential ones or drop duplicates cleanly
+        df = df.loc[:, ~df.columns.duplicated()]
+        
         return df
     except Exception as e:
         st.error(f"Google Sheet load karne me error aaya: {e}")
@@ -49,7 +51,7 @@ def load_data():
 df = load_data()
 
 if df is None:
-    st.error("Google Sheet ('MYNTRA PRICE') ya credentials nahi mile! Kripya Streamlit Secrets check karein.")
+    st.error("Google Sheet ('MYNTRA PRICE') load nahi ho payi. Kripya check karein.")
     st.stop()
 
 st.title("🛍️ Myntra Catalog & Price Tracker Dashboard")
@@ -114,7 +116,6 @@ if view_mode == "📊 Clean Price & Stock Table":
                 filtered_df = filtered_df[filtered_df[oos_col].astype(str).str.startswith("ALL")]
 
     st.metric("Total Products Displayed", len(filtered_df))
-    
     st.dataframe(filtered_df, use_container_width=True, height=600)
 
 elif view_mode == "⭐ Top Rated Products":
@@ -159,7 +160,7 @@ elif view_mode == "📈 Product Trend Analysis":
                 
                 price_val = prod_row[p_col].values[0] if p_col in prod_row.columns else None
                 star_val = prod_row[s_col].values[0] if s_col in prod_row.columns else None
-                rev_val = prod_row[r_col].values[0] if r_col in prod_row.columns else None
+                rev_val = prod_row[r_col].values[0] if prod_row.columns else None
                 
                 p_num = float(re.sub(r'[^0-9.]', '', str(price_val))) if pd.notna(price_val) and re.sub(r'[^0-9.]', '', str(price_val)) else None
                 
