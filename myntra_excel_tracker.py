@@ -1,23 +1,84 @@
-import datetime
-import io
-import json
 import os
-import re
-import time
 import requests
+from bs4 import BeautifulSoup
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from concurrent.futures import ThreadPoolExecutor
 
-# Google Sheets Auth
-SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-CREDS_FILE = "credentials.json"
 SHEET_NAME = "MYNTRA PRICE"
 
-def get_google_sheet():
-    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
-    client = gspread.authorize(creds)
-    sheet = client.open(SHEET_NAME).sheet1
-    return sheet
+def get_google_sheet_client():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    if os.path.exists("credentials.json"):
+        creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+    else:
+        # Streamlit secrets fallback agar local run na ho raha ho
+        import streamlit as st
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    return gspread.authorize(creds)
 
-# Remaining Myntra scraper logic stays exact same as before...
+def fetch_myntra_image(product_url):
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+        response = requests.get(product_url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            # Myntra meta tag se direct image uthana sabse reliable hai
+            meta_img = soup.find("meta", property="og:image")
+            if meta_img and meta_img.get("content"):
+                return meta_img["content"]
+    except Exception as e:
+        print(f"Error fetching image for {product_url}: {e}")
+    return ""
+
+def main():
+    print("Google Sheet se connection ban raha hai...")
+    client = get_google_sheet_client()
+    sheet = client.open(SHEET_NAME).sheet1
+    
+    records = sheet.get_all_records()
+    headers = sheet.row_values(1)
+    
+    # Columns ke index pata karna (1-based index for gspread)
+    try:
+        photo_col_idx = headers.index("PHOTO") + 1
+    except ValueError:
+        print("PHOTO column nahi mila!")
+        return
+
+    try:
+        link_col_idx = headers.index("STYLE ID LINK") + 1
+    except ValueError:
+        try:
+            link_col_idx = headers.index("STYLE ID") + 1
+        except ValueError:
+            print("Style ID ya Link column nahi mila!")
+            return
+
+    print("Products check ho rahe hain aur missing photos update ki ja rahi hain...")
+    
+    for idx, row in enumerate(records, start=2): # Row 2 se start kyunki row 1 header hai
+        current_photo = str(row.get("PHOTO", "")).strip()
+        
+        # Agar photo pehle se nahi hai, tabhi fetch karo
+        if not current_photo or current_photo.lower() == "nan" or current_photo == "":
+            product_link = str(row.get("STYLE ID LINK", "")).strip()
+            if not product_link:
+                style_id = str(row.get("STYLE ID", "")).strip()
+                if style_id:
+                    product_link = f"https://www.mynrta.com/{style_id}" # fallback link structure
+            
+            if product_link and product_link.startswith("http"):
+                print(f"Fetching photo for row {idx} -> {product_link}")
+                img_url = fetch_myntra_image(product_link)
+                if img_url:
+                    sheet.update_cell(idx, photo_col_idx, img_url)
+                    print(f"Updated photo for row {idx}")
+
+    print("Tracker script successfully run ho gayi hai!")
+
+if __name__ == "__main__":
+    main()
