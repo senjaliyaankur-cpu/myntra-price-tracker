@@ -40,6 +40,18 @@ def load_data():
 
         df = pd.DataFrame(rows[1:], columns=rows[0])
         
+        # Date columns (jo sirf date hain jaise '04/11/2026') unko 'SELLING PRICE' rename karna
+        renamed_columns = {}
+        for c in df.columns:
+            c_str = str(c).strip()
+            # Agar column name exact date format me hai (e.g., DD/MM/YYYY)
+            if re.match(r"^\d{2}/\d{2}/\d{4}$", c_str):
+                renamed_columns[c] = f"{c_str} - SELLING PRICE"
+            else:
+                renamed_columns[c] = c_str
+        df = df.rename(columns=renamed_columns)
+        
+        # Duplicate columns handle karna
         new_cols = []
         seen = {}
         for c in df.columns:
@@ -91,11 +103,9 @@ if st.sidebar.button("🔄 Refresh & Clear Cache"):
 st.sidebar.markdown("---")
 
 cols = list(df.columns)
-date_re = re.compile(r"^(\d{2})/(\d{2})/(\d{4})$")
 dates = []
 
 for c in cols:
-    # Date ko column name me detect karna (e.g. "07/11/2026")
     m = re.search(r"(\d{2}/\d{2}/\d{4})", str(c))
     if m:
         d_str = m.group(1)
@@ -205,7 +215,7 @@ elif view_mode == "📈 Product Trend Analysis":
             
             history_data = []
             for d in dates:
-                p_cols = [c for c in prod_row.columns if d == str(c).strip()]
+                p_cols = [c for c in prod_row.columns if d in str(c) and "SELLING PRICE" in str(c).upper()]
                 s_cols = [c for c in prod_row.columns if d in str(c) and "STAR" in str(c).upper()]
                 r_cols = [c for c in prod_row.columns if d in str(c) and "REVIEWS" in str(c).upper()]
                 
