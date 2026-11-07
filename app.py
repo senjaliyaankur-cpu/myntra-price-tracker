@@ -7,6 +7,7 @@ import subprocess
 import re
 import json
 import requests
+from bs4 import BeautifulSoup
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -23,15 +24,20 @@ if not os.path.exists("credentials.json") and "gcp_service_account" in st.secret
         st.error(f"Credentials file banane me error: {e}")
 
 def fetch_live_style_data(style_id):
-    """Myntra API se live price, ratings, reviews aur image fetch karta hai."""
+    """Myntra API aur HTML scraping fallback ke sath live price, ratings, reviews aur image fetch karta hai."""
     data_out = {"price": "", "star": "", "reviews": "", "image": "", "oos": "NONE", "seller": ""}
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.myntra.com/"
+    }
+    
+    # 1. API Try karna
     try:
         api_url = f"https://www.myntra.com/gateway/v2/product/{style_id}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*"
-        }
-        res = requests.get(api_url, headers=headers, timeout=10)
+        res = requests.get(api_url, headers={"User-Agent": headers["User-Agent"], "Accept": "application/json"}, timeout=8)
         if res.status_code == 200:
             j = res.json()
             price_info = j.get("price", {})
@@ -59,9 +65,6 @@ def fetch_live_style_data(style_id):
                     if img_info and "secureUrl" in img_info:
                         data_out["image"] = img_info["secureUrl"]
                         
-            if not data_out["image"]:
-                data_out["image"] = f"https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/{style_id}/default/image.jpg"
-                
             sizes = j.get("sizes", [])
             if sizes:
                 avail_sizes = [s.get("label") for s in sizes if s.get("available")]
@@ -70,10 +73,49 @@ def fetch_live_style_data(style_id):
                     data_out["oos"] = f"ALL: {', '.join(all_sizes)}"
                 else:
                     data_out["oos"] = f"{', '.join(avail_sizes)}"
-        else:
-            data_out["image"] = f"https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/{style_id}/default/image.jpg"
     except Exception as e:
-        print(f"Error fetching live data: {e}")
+        print(f"API fetch error: {e}")
+
+    # 2. Agar API se data na mile toh HTML page scrape karna
+    if not data_out["price"] or not data_out["image"]:
+        try:
+            page_url = f"https://www.myntra.com/{style_id}"
+            page_res = requests.get(page_url, headers=headers, timeout=10)
+            if page_res.status_code == 200:
+                soup = BeautifulSoup(page_res.text, 'html.parser')
+                
+                # Meta Image
+                meta_img = soup.find("meta", property="og:image")
+                if meta_img and meta_img.get("content"):
+                    data_out["image"] = meta_img["content"]
+                
+                # window.__myx JSON state se data extract karna
+                match = re.search(r'window\.__myx\s*=\s*(\{.*?\});?</script>', page_res.text, re.DOTALL)
+                if match:
+                    pdp_data = json.loads(match.group(1)).get("pdpData", {})
+                    
+                    # Price from pdpData
+                    if not data_out["price"]:
+                        price = pdpData.get("price", {}).get("discounted") or pdpData.get("price", {}).get("mrp")
+                        if price:
+                            data_out["price"] = f"₹{price}"
+                            
+                    # Rating from pdpData
+                    if not data_out["star"]:
+                        rating = pdpData.get("ratings", {}).get("averageRating")
+                        if rating:
+                            data_out["star"] = str(rating)
+                            
+                    # Reviews from pdpData
+                    if not data_out["reviews"]:
+                        reviews = pdpData.get("ratings", {}).get("totalCount")
+                        if reviews:
+                            data_out["reviews"] = str(reviews)
+        except Exception as e:
+            print(f"HTML scrape error: {e}")
+
+    # Fallback image agar kuch na mile
+    if not data_out["image"]:
         data_out["image"] = f"https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/{style_id}/default/image.jpg"
         
     return data_out
@@ -147,7 +189,7 @@ if st.sidebar.button("🔄 Refresh & Clear Cache"):
 
 st.sidebar.markdown("---")
 
-# Add New Style ID Section in Sidebar with Live Data & Auto-fill Missing Today's Data
+# Add New Style ID Section in Sidebar with Robust Live Data Fetching
 st.sidebar.subheader("➕ Add New Style ID")
 new_style_input = st.sidebar.text_input("Enter Style ID or Link")
 if st.sidebar.button("Add to Google Sheet"):
@@ -167,8 +209,7 @@ if st.sidebar.button("Add to Google Sheet"):
                     
                     style_col_idx = -1
                     for idx, h in enumerate(headers):
-                        h_up = str(h).upper()
-                        if "STYLE ID" in h_up and "LINK" not in h_up:
+                        if "STYLE ID" in str(h).upper() and "LINK" not in str(h).upper():
                             style_col_idx = idx + 1
                             
                     existing_styles = [str(row[style_col_idx - 1]) for row in all_vals[1:]] if style_col_idx != -1 and len(all_vals) > 1 else []
@@ -216,7 +257,7 @@ if st.sidebar.button("Add to Google Sheet"):
         else:
             st.sidebar.error("Kripya valid Style ID ya Link enter karein!")
 
-# Auto-fill missing today's data for existing rows if empty
+# Auto-fill missing today's data for existing rows
 if st.sidebar.button("⚡ Auto-Fill Today's Missing Data"):
     with st.spinner("Checking and filling missing today's data for existing styles..."):
         try:
@@ -240,11 +281,9 @@ if st.sidebar.button("⚡ Auto-Fill Today's Missing Data"):
                 for row_idx, row in enumerate(all_vals[1:], start=2):
                     style_id = row[style_col_idx].strip()
                     if style_id:
-                        # Check if today's price column is empty
                         for col_idx, h in enumerate(headers):
                             h_str = str(h).strip()
                             if today_str in h_str and (col_idx >= len(row) or not row[col_idx].strip()):
-                                # Missing data fetch karke update list me daalna
                                 live_data = fetch_live_style_data(style_id)
                                 h_up = h_str.upper()
                                 val = live_data["price"]
@@ -257,15 +296,16 @@ if st.sidebar.button("⚡ Auto-Fill Today's Missing Data"):
                                 elif "SELLER" in h_up:
                                     val = live_data["seller"]
                                 
-                                updates.append(gspread.Cell(row_idx, col_idx + 1, val))
-                                
+                                if val:
+                                    updates.append(gspread.Cell(row_idx, col_idx + 1, val))
+                                    
                 if updates:
                     sheet.update_cells(updates)
                     st.sidebar.success(f"Total {len(updates)} missing fields aaj ki date ke liye update kar diye gaye hain!")
                     st.cache_data.clear()
                     st.rerun()
                 else:
-                    st.sidebar.info("Sabhi existing styles me aaj ka data pehle se maujood hai!")
+                    st.sidebar.info("Sabhi existing styles me aaj ka data pehle se maujood hai ya fetch nahi ho paya.")
         except Exception as e:
             st.sidebar.error(f"Error auto-filling data: {e}")
 
