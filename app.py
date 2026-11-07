@@ -40,17 +40,6 @@ def load_data():
 
         df = pd.DataFrame(rows[1:], columns=rows[0])
         
-        # Date columns (jo sirf date hain jaise '04/11/2026') unko 'SELLING PRICE' rename karna
-        renamed_columns = {}
-        for c in df.columns:
-            c_str = str(c).strip()
-            # Agar column name exact date format me hai (e.g., DD/MM/YYYY)
-            if re.match(r"^\d{2}/\d{2}/\d{4}$", c_str):
-                renamed_columns[c] = f"{c_str} - SELLING PRICE"
-            else:
-                renamed_columns[c] = c_str
-        df = df.rename(columns=renamed_columns)
-        
         # Duplicate columns handle karna
         new_cols = []
         seen = {}
@@ -159,9 +148,34 @@ if view_mode == "📊 Clean Price & Stock Table":
 
     st.metric("Total Products Displayed", len(filtered_df))
     
+    # MultiIndex Header Conversion for Professional Display
+    multi_columns = []
+    for col in filtered_df.columns:
+        col_upper = str(col).upper()
+        # Check if column has date
+        m = re.search(r"(\d{2}/\d{2}/\d{4})", str(col))
+        if m:
+            date_part = m.group(1)
+            if "STAR" in col_upper:
+                sub_name = "STAR"
+            elif "REVIEW" in col_upper:
+                sub_name = "REVIEWS"
+            elif "OUT OF STOCK" in col_upper:
+                sub_name = "OUT OF STOCK"
+            elif "SELLER" in col_upper:
+                sub_name = "SELLERS"
+            else:
+                sub_name = "SELLING PRICE"
+            multi_columns.append((date_part, sub_name))
+        else:
+            multi_columns.append(("General Details", col_upper))
+            
+    filtered_df.columns = pd.MultiIndex.from_tuples(multi_columns)
+
     column_config = {}
     for col in filtered_df.columns:
-        if col.upper().strip() == "PHOTO" or col.upper().startswith("PHOTO_"):
+        # col is a tuple (Top, Sub)
+        if "PHOTO" in str(col[1]).upper():
             column_config[col] = st.column_config.ImageColumn("Product Photo", width="small")
     
     st.dataframe(filtered_df, column_config=column_config, use_container_width=True, height=600)
