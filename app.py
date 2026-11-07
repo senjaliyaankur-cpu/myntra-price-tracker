@@ -5,6 +5,7 @@ import os
 import sys
 import subprocess
 import re
+import json
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -13,15 +14,19 @@ st.set_page_config(page_title="Myntra Price & Stock Tracker", page_icon="🛍️
 SHEET_NAME = "MYNTRA PRICE"
 PHOTO_DIR = "photos"
 
+# Automatically create credentials.json from Streamlit secrets so subprocess can use it
+if not os.path.exists("credentials.json") and "gcp_service_account" in st.secrets:
+    try:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        with open("credentials.json", "w") as f:
+            json.dump(creds_dict, f)
+    except Exception as e:
+        st.error(f"Credentials file banane me error: {e}")
+
 @st.cache_data(ttl=60)
 def load_data():
     try:
-        if "gcp_service_account" in st.secrets:
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-            client = gspread.authorize(creds)
-        elif os.path.exists("credentials.json"):
+        if os.path.exists("credentials.json"):
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
             creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
             client = gspread.authorize(creds)
@@ -37,7 +42,6 @@ def load_data():
 
         df = pd.DataFrame(rows[1:], columns=rows[0])
         
-        # Duplicate columns ko handle karne ke liye clean names dena
         new_cols = []
         seen = {}
         for c in df.columns:
@@ -128,7 +132,6 @@ if view_mode == "📊 Clean Price & Stock Table":
     st.metric("Total Products Displayed", len(filtered_df))
     
     column_config = {}
-    # Pehla ya dusra PHOTO column detect karke image column banana
     for col in filtered_df.columns:
         if "PHOTO" in col.upper():
             column_config[col] = st.column_config.ImageColumn("Product Photo", width="small")
