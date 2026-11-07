@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 import os
+import sys
 import subprocess
 import re
 import gspread
@@ -25,22 +26,16 @@ def load_data():
             creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
             client = gspread.authorize(creds)
         else:
-            st.error("Secrets ya credentials.json nahi mila!")
             return None
 
-        # Spreadsheet kholna
         spreadsheet = client.open(SHEET_NAME)
-        # Pehli worksheet lena
         sheet = spreadsheet.sheet1
         rows = sheet.get_all_values()
         
         if not rows or len(rows) < 2:
-            st.warning(f"Google Sheet '{SHEET_NAME}' khali hai ya usme sirf 1 row hai!")
             return None
 
         df = pd.DataFrame(rows[1:], columns=rows[0])
-        
-        # Strip spaces from column headers
         df.columns = [str(c).strip() for c in df.columns]
         
         if df.empty:
@@ -55,7 +50,7 @@ def load_data():
 df = load_data()
 
 if df is None:
-    st.error("⚠️ Google Sheet data load nahi ho paya! Kripya check karein ki Google Sheet ka naam bilkul exact **'MYNTRA PRICE'** hai aur usme data bhara hua hai.")
+    st.error("Google Sheet ('MYNTRA PRICE') load nahi ho payi. Kripya credentials check karein.")
     st.stop()
 
 st.title("🛍️ Myntra Catalog & Price Tracker Dashboard")
@@ -66,7 +61,7 @@ st.sidebar.header("⚙️ Dashboard Controls")
 if st.sidebar.button("🔄 Run Tracker Script (Update Data)", type="primary"):
     with st.spinner("Myntra se latest data fetch ho raha hai... Please wait..."):
         try:
-            result = subprocess.run(["python", "myntra_excel_tracker.py"], capture_output=True, text=True, timeout=120)
+            result = subprocess.run([sys.executable, "myntra_excel_tracker.py"], capture_output=True, text=True, timeout=120)
             if result.returncode == 0:
                 st.sidebar.success("Data successfully update ho gaya!")
                 st.cache_data.clear()
