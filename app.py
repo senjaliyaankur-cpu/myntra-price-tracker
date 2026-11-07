@@ -1,3 +1,4 @@
+import os
 import re
 
 import pandas as pd
@@ -9,6 +10,13 @@ st.set_page_config(page_title="Myntra Price & Stock Tracker", page_icon="🛍️
 
 
 # ======================= Google Sheet se data =======================
+
+try:    # Streamlit Secrets me myntra_proxy = "http://user:pass@host:port" ho to use lagao
+    if st.secrets.get("myntra_proxy"):
+        os.environ["MYNTRA_PROXY"] = str(st.secrets["myntra_proxy"])
+except Exception:
+    pass
+
 
 def secret_info():
     """Streamlit Cloud ke Secrets me [gcp_service_account] ho to wo, warna None (credentials.json use hoga)"""
@@ -129,8 +137,8 @@ if st.sidebar.button("⚡ Aaj ka data update karo", type="primary"):
         msg = (f"{result['date']}: {result['fetched']} products check hue, "
                f"{result['photos']} nayi photos, {result['errors']} me data nahi mila.")
         if result["fetched"] and result["errors"] == result["fetched"]:
-            msg += " Saare products fail hue - Myntra is server ko block kar raha ho sakta hai. " \
-                   "Aisa ho to apne computer par `python myntra_excel_tracker.py` chalao."
+            msg += " Myntra Streamlit ke server ko block kar raha hai. Data GitHub se update karo: " \
+                   "GitHub repo > Actions > 'Update Myntra data' > Run workflow."
             st.session_state["flash"] = ("warning", msg)
         else:
             st.session_state["flash"] = ("success", msg)
