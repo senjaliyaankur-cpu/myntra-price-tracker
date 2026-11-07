@@ -14,7 +14,7 @@ st.set_page_config(page_title="Myntra Price & Stock Tracker", page_icon="🛍️
 SHEET_NAME = "MYNTRA PRICE"
 PHOTO_DIR = "photos"
 
-# Automatically create credentials.json from Streamlit secrets so subprocess can use it
+# Credentials setup for subprocess
 if not os.path.exists("credentials.json") and "gcp_service_account" in st.secrets:
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
