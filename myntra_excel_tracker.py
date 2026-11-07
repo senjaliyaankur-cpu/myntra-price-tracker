@@ -10,9 +10,7 @@ def get_google_sheet_client():
     if os.path.exists("credentials.json"):
         creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
     else:
-        import streamlit as st
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        raise Exception("credentials.json file nahi mili!")
     return gspread.authorize(creds)
 
 def main():
@@ -27,7 +25,6 @@ def main():
 
     headers = [str(h).strip().upper() for h in all_rows[0]]
     
-    # Pehla PHOTO column dhundna
     photo_col_idx = -1
     for idx, h in enumerate(headers):
         if h == "PHOTO":
@@ -38,7 +35,6 @@ def main():
         print("PHOTO column nahi mila!")
         return
 
-    # STYLE ID LINK ya STYLE ID column dhundna
     link_col_idx = -1
     for idx, h in enumerate(headers):
         if "LINK" in h or "STYLE ID" in h:
@@ -57,11 +53,9 @@ def main():
         if not current_photo or current_photo.lower() == "nan" or current_photo == "":
             product_link = row[link_col_idx - 1].strip() if len(row) >= link_col_idx else ""
             
-            # Link ya Style ID se numbers (e.g. 40480606) nikalna
             numbers = re.findall(r'\d+', product_link)
             if numbers:
-                style_id = numbers[-1] # Aakhri number style id hota hai
-                # Myntra ka official standard CDN image URL pattern
+                style_id = numbers[-1]
                 img_url = f"https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/{style_id}/default/image.jpg"
                 
                 sheet.update_cell(idx, photo_col_idx, img_url)
