@@ -1,7 +1,5 @@
-streamlit
+streamlit>=1.40
 pandas
-gspread
-oauth2client
+gspread>=6.0
 requests
-beautifulsoup4
-pillow
+tzdata
