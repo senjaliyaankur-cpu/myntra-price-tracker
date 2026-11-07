@@ -38,8 +38,10 @@ def load_data():
         if not rows or len(rows) < 2:
             return None
 
+        # Google sheet ki row 0 ko header banana
         df = pd.DataFrame(rows[1:], columns=rows[0])
         
+        # Duplicate columns handle karna
         new_cols = []
         seen = {}
         for c in df.columns:
@@ -113,7 +115,8 @@ if view_mode == "📊 Clean Price & Stock Table":
     with col1:
         search_query = st.text_input("🔍 Search (Style ID, Seller, Size, etc.)", "")
     with col2:
-        selected_date = st.selectbox("📅 Filter by Date Column", ["All Dates"] + (dates[::-1] if dates else []))
+        # Multiple date selection support
+        selected_dates = st.multiselect("📅 Filter by Date Columns", options=dates, default=[])
     with col3:
         stock_filter = st.selectbox("📦 Stock Status Filter", ["All", "In Stock (NONE)", "Out of Stock (ALL)"])
         
@@ -123,13 +126,31 @@ if view_mode == "📊 Clean Price & Stock Table":
         mask = filtered_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)
         filtered_df = filtered_df[mask]
         
-    if selected_date and selected_date != "All Dates":
-        oos_col = f"{selected_date} OUT OF STOCK"
-        if oos_col in filtered_df.columns:
-            if stock_filter == "In Stock (NONE)":
-                filtered_df = filtered_df[filtered_df[oos_col] == "NONE"]
-            elif stock_filter == "Out of Stock (ALL)":
-                filtered_df = filtered_df[filtered_df[oos_col].astype(str).str.startswith("ALL")]
+    # Multiple date filtering logic
+    if selected_dates:
+        # Base columns jo hamesha dikhenge
+        base_cols = [c for c in df.columns if not date_re.match(str(c).strip()) and "STAR" not in str(c) and "REVIEWS" not in str(c) and "OUT OF STOCK" not in str(c) and "SELLER" not in str(c)]
+        
+        # Selected dates se jude hue saare sub-columns (Price, Star, Reviews, Out of Stock, Seller, etc.)
+        keep_cols = list(base_cols)
+        for d in selected_dates:
+            for col in df.columns:
+                if col.startswith(d) or col == d:
+                    if col not in keep_cols:
+                        keep_cols.append(col)
+        
+        # DataFrame ko sirf selected columns tak limit karna
+        existing_keep_cols = [c for c in keep_cols if c in filtered_df.columns]
+        filtered_df = filtered_df[existing_keep_cols]
+
+    if selected_dates and len(selected_dates) > 0 and stock_filter != "All":
+        for selected_date in selected_dates:
+            oos_col = f"{selected_date} OUT OF STOCK"
+            if oos_col in filtered_df.columns:
+                if stock_filter == "In Stock (NONE)":
+                    filtered_df = filtered_df[filtered_df[oos_col] == "NONE"]
+                elif stock_filter == "Out of Stock (ALL)":
+                    filtered_df = filtered_df[filtered_df[oos_col].astype(str).str.startswith("ALL")]
 
     st.metric("Total Products Displayed", len(filtered_df))
     
