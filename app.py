@@ -40,17 +40,21 @@ def load_data():
 
         df = pd.DataFrame(rows[1:], columns=rows[0])
         
-        # Clean columns: date ko hatakar sirf field name rakhna (jaise SELLING PRICE, STAR, etc.)
+        # Format columns: Date columns ko saaf-saaf date ke sath rename karna
         renamed_columns = {}
         for c in df.columns:
             c_str = str(c).strip()
             # Agar column name exact date format me hai (e.g., DD/MM/YYYY)
-            if re.match(r"^\d{2}/\d{2}/\d{4}$", c_str):
-                renamed_columns[c] = "SELLING PRICE"
+            m_date = re.search(r"^(\d{2}/\d{2}/\d{4})$", c_str)
+            if m_date:
+                renamed_columns[c] = f"{m_date.group(1)} - SELLING PRICE"
             else:
-                # Date prefix hata kar clean naam dena (e.g., "07/11/2026 STAR" -> "STAR")
-                clean_name = re.sub(r"^\d{2}/\d{2}/\d{4}\s*", "", c_str)
-                renamed_columns[c] = clean_name if clean_name else c_str
+                # Check agar date prefix already hai ya nahi
+                m_prefix = re.search(r"^(\d{2}/\d{2}/\d{4})\s+(.*)", c_str)
+                if m_prefix:
+                    renamed_columns[c] = f"{m_prefix.group(1)} - {m_prefix.group(2)}"
+                else:
+                    renamed_columns[c] = c_str
         df = df.rename(columns=renamed_columns)
         
         # Duplicate columns handle karna
@@ -104,17 +108,10 @@ if st.sidebar.button("🔄 Refresh & Clear Cache"):
 
 st.sidebar.markdown("---")
 
-# Original sheet headers se dates extract karna for filter
-try:
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope) if os.path.exists("credentials.json") else ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
-    raw_rows = gspread.authorize(creds).open(SHEET_NAME).sheet1.get_all_values()
-    raw_cols = raw_rows[0] if raw_rows else []
-except:
-    raw_cols = list(df.columns)
-
+# Dates extract karna for filter
+cols = list(df.columns)
 dates = []
-for c in raw_cols:
+for c in cols:
     m = re.search(r"(\d{2}/\d{2}/\d{4})", str(c))
     if m:
         d_str = m.group(1)
@@ -137,15 +134,34 @@ if view_mode == "📊 Clean Price & Stock Table":
     with col3:
         stock_filter = st.selectbox("📦 Stock Status Filter", ["All", "In Stock (NONE)", "Out of Stock (ALL)"])
         
-    # Upar alag se active date banner dikhana
-    if selected_dates:
-        st.info(f"📅 **Active Date View:** {', '.join(selected_dates)}")
-        
     filtered_df = df.copy()
     
     if search_query:
         mask = filtered_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)
         filtered_df = filtered_df[mask]
+        
+    # Multiple date filtering logic
+    if selected_dates:
+        base_cols = [c for c in df.columns if not re.search(r"\d{2}/\d{2}/\d{4}", str(c))]
+        
+        keep_cols = list(base_cols)
+        for d in selected_dates:
+            for col in df.columns:
+                if d in str(col):
+                    if col not in keep_cols:
+                        keep_cols.append(col)
+        
+        existing_keep_cols = [c for c in keep_cols if c in filtered_df.columns]
+        filtered_df = filtered_df[existing_keep_cols]
+
+    if selected_dates and len(selected_dates) > 0 and stock_filter != "All":
+        for selected_date in selected_dates:
+            oos_cols = [c for c in filtered_df.columns if selected_date in str(c) and "OUT OF STOCK" in str(c).upper()]
+            for oos_col in oos_cols:
+                if stock_filter == "In Stock (NONE)":
+                    filtered_df = filtered_df[filtered_df[oos_col] == "NONE"]
+                elif stock_filter == "Out of Stock (ALL)":
+                    filtered_df = filtered_df[filtered_df[oos_col].astype(str).str.startswith("ALL")]
 
     st.metric("Total Products Displayed", len(filtered_df))
     
@@ -165,8 +181,8 @@ elif view_mode == "⭐ Top Rated Products":
         min_rev = st.number_input("Minimum Reviews", min_value=0, value=10)
         
     if latest_date:
-        star_cols = [c for c in df.columns if "STAR" in str(c).upper()]
-        rev_cols = [c for c in df.columns if "REVIEWS" in str(c).upper()]
+        star_cols = [c for c in df.columns if latest_date in str(c) and "STAR" in str(c).upper()]
+        rev_cols = [c for c in df.columns if latest_date in str(c) and "REVIEWS" in str(c).upper()]
         
         if star_cols and rev_cols:
             star_col = star_cols[0]
@@ -205,9 +221,9 @@ elif view_mode == "📈 Product Trend Analysis":
             
             history_data = []
             for d in dates:
-                p_cols = [c for c in prod_row.columns if "SELLING PRICE" in str(c).upper()]
-                s_cols = [c for c in prod_row.columns if "STAR" in str(c).upper()]
-                r_cols = [c for c in prod_row.columns if "REVIEWS" in str(c).upper()]
+                p_cols = [c for c in prod_row.columns if d in str(c) and "SELLING PRICE" in str(c).upper()]
+                s_cols = [c for c in prod_row.columns if d in str(c) and "STAR" in str(c).upper()]
+                r_cols = [c for c in prod_row.columns if d in str(c) and "REVIEWS" in str(c).upper()]
                 
                 price_val = prod_row[p_cols[0]].values[0] if p_cols else None
                 star_val = prod_row[s_cols[0]].values[0] if s_cols else None
