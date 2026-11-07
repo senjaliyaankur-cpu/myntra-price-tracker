@@ -40,23 +40,6 @@ def load_data():
 
         df = pd.DataFrame(rows[1:], columns=rows[0])
         
-        # Format columns: Date columns ko saaf-saaf date ke sath rename karna
-        renamed_columns = {}
-        for c in df.columns:
-            c_str = str(c).strip()
-            # Agar column name exact date format me hai (e.g., DD/MM/YYYY)
-            m_date = re.search(r"^(\d{2}/\d{2}/\d{4})$", c_str)
-            if m_date:
-                renamed_columns[c] = f"{m_date.group(1)} - SELLING PRICE"
-            else:
-                # Check agar date prefix already hai ya nahi
-                m_prefix = re.search(r"^(\d{2}/\d{2}/\d{4})\s+(.*)", c_str)
-                if m_prefix:
-                    renamed_columns[c] = f"{m_prefix.group(1)} - {m_prefix.group(2)}"
-                else:
-                    renamed_columns[c] = c_str
-        df = df.rename(columns=renamed_columns)
-        
         # Duplicate columns handle karna
         new_cols = []
         seen = {}
@@ -108,9 +91,9 @@ if st.sidebar.button("🔄 Refresh & Clear Cache"):
 
 st.sidebar.markdown("---")
 
-# Dates extract karna for filter
 cols = list(df.columns)
 dates = []
+
 for c in cols:
     m = re.search(r"(\d{2}/\d{2}/\d{4})", str(c))
     if m:
@@ -165,12 +148,27 @@ if view_mode == "📊 Clean Price & Stock Table":
 
     st.metric("Total Products Displayed", len(filtered_df))
     
-    column_config = {}
+    # MultiIndex Columns Setup (Upar Date, Niche Field Names)
+    multi_tuples = []
     for col in filtered_df.columns:
-        if str(col).upper().strip() == "PHOTO" or str(col).upper().startswith("PHOTO_"):
-            column_config[col] = st.column_config.ImageColumn("Product Photo", width="small")
-    
-    st.dataframe(filtered_df, column_config=column_config, use_container_width=True, height=600)
+        col_str = str(col).strip()
+        col_upper = col_str.upper()
+        
+        m = re.search(r"(\d{2}/\d{2}/\d{4})", col_str)
+        if m:
+            date_part = m.group(1)
+            # Field name alag karna
+            sub_name = col_str.replace(date_part, "").strip(" -_")
+            if not sub_name:
+                sub_name = "SELLING PRICE"
+            multi_tuples.append((date_part, sub_name.upper()))
+        else:
+            multi_tuples.append(("General Details", col_upper))
+            
+    filtered_df.columns = pd.MultiIndex.from_tuples(multi_tuples)
+
+    # Custom styling to render MultiIndex cleanly without arrow crash
+    st.dataframe(filtered_df, use_container_width=True, height=600)
 
 elif view_mode == "⭐ Top Rated Products":
     st.subheader("⭐ Top Rated Products Leaderboard")
@@ -194,12 +192,7 @@ elif view_mode == "⭐ Top Rated Products":
             top_df = top_df[(top_df[star_col] > 0) & (top_df[rev_col] >= min_rev)]
             top_df = top_df.sort_values(by=[star_col, rev_col], ascending=[False, False]).head(top_n)
             
-            column_config = {}
-            for col in top_df.columns:
-                if str(col).upper().strip() == "PHOTO" or str(col).upper().startswith("PHOTO_"):
-                    column_config[col] = st.column_config.ImageColumn("Product Photo", width="small")
-            
-            st.dataframe(top_df, column_config=column_config, use_container_width=True, height=500)
+            st.dataframe(top_df, use_container_width=True, height=500)
 
 elif view_mode == "📈 Product Trend Analysis":
     st.subheader("📈 Style Price & Rating History Trend")
@@ -211,17 +204,16 @@ elif view_mode == "📈 Product Trend Analysis":
         if not prod_row.empty:
             photo_url = ""
             for col in prod_row.columns:
-                if str(col).upper().strip() == "PHOTO" or str(col).upper().startswith("PHOTO_"):
-                    val = str(prod_row[col].values[0]).strip()
-                    if val.startswith("http"):
-                        photo_url = val
-                        break
+                val = str(prod_row[col].values[0]).strip()
+                if val.startswith("http"):
+                    photo_url = val
+                    break
             if photo_url:
                 st.image(photo_url, width=120)
             
             history_data = []
             for d in dates:
-                p_cols = [c for c in prod_row.columns if d in str(c) and "SELLING PRICE" in str(c).upper()]
+                p_cols = [c for c in prod_row.columns if d in str(c) and ("SELLING PRICE" in str(c).upper() or c == d)]
                 s_cols = [c for c in prod_row.columns if d in str(c) and "STAR" in str(c).upper()]
                 r_cols = [c for c in prod_row.columns if d in str(c) and "REVIEWS" in str(c).upper()]
                 
