@@ -17,7 +17,7 @@ def get_google_sheet_client():
     return gspread.authorize(creds)
 
 def fetch_image_via_myntra_api(style_id):
-    """Myntra ke direct mobile/web JSON API se product image fetch karta hai."""
+    """Myntra ke direct mobile/web JSON API se exact real product image fetch karta hai."""
     try:
         api_url = f"https://www.myntra.com/gateway/v2/product/{style_id}"
         headers = {
@@ -27,12 +27,12 @@ def fetch_image_via_myntra_api(style_id):
         res = requests.get(api_url, headers=headers, timeout=10)
         if res.status_code == 200:
             data = res.json()
-            # API response se search images / default images nikalna
+            # 1. Search Image check karna
             search_image = data.get("searchImage")
             if search_image:
                 return search_image
             
-            # Agar searchImage na mile toh views se uthana
+            # 2. Views / default check karna
             views = data.get("views", {})
             if "default" in views:
                 image_info = views["default"].get("image1")
@@ -81,10 +81,10 @@ def main():
     for idx, row in enumerate(all_rows[1:], start=2):
         current_photo = row[photo_col_idx - 1].strip() if len(row) >= photo_col_idx else ""
         
-        if not current_photo or current_photo.lower() == "nan" or current_photo == "":
+        # Agar photo cell khali hai ya default link hai, tabhi API se fetch karega
+        if not current_photo or current_photo.lower() == "nan" or current_photo == "" or "default/image.jpg" in current_photo:
             product_link = row[link_col_idx - 1].strip() if len(row) >= link_col_idx else ""
             
-            # Style ID extract karna (e.g., 40480606)
             numbers = re.findall(r'\d+', product_link)
             if numbers:
                 style_id = numbers[-1]
