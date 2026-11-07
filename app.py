@@ -34,7 +34,6 @@ def fetch_live_style_data(style_id):
         res = requests.get(api_url, headers=headers, timeout=10)
         if res.status_code == 200:
             j = res.json()
-            # Price
             price_info = j.get("price", {})
             mrp = price_info.get("mrp", 0)
             discounted = price_info.get("discounted", 0)
@@ -42,7 +41,6 @@ def fetch_live_style_data(style_id):
             if final_price > 0:
                 data_out["price"] = f"₹{final_price}"
             
-            # Rating & Reviews
             rating_info = j.get("rating", {})
             ratings_val = rating_info.get("averageRating", 0)
             review_count = rating_info.get("totalCount", 0)
@@ -51,7 +49,6 @@ def fetch_live_style_data(style_id):
             if review_count:
                 data_out["reviews"] = str(review_count)
                 
-            # Image
             search_image = j.get("searchImage")
             if search_image:
                 data_out["image"] = search_image
@@ -65,7 +62,6 @@ def fetch_live_style_data(style_id):
             if not data_out["image"]:
                 data_out["image"] = f"https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/{style_id}/default/image.jpg"
                 
-            # Sizes / Stock
             sizes = j.get("sizes", [])
             if sizes:
                 avail_sizes = [s.get("label") for s in sizes if s.get("available")]
@@ -151,7 +147,7 @@ if st.sidebar.button("🔄 Refresh & Clear Cache"):
 
 st.sidebar.markdown("---")
 
-# Add New Style ID Section in Sidebar with Live Data Fetching
+# Add New Style ID Section in Sidebar with Live Data & Auto-fill Missing Today's Data
 st.sidebar.subheader("➕ Add New Style ID")
 new_style_input = st.sidebar.text_input("Enter Style ID or Link")
 if st.sidebar.button("Add to Google Sheet"):
@@ -170,27 +166,19 @@ if st.sidebar.button("Add to Google Sheet"):
                     headers = all_vals[0] if all_vals else []
                     
                     style_col_idx = -1
-                    link_col_idx = -1
-                    photo_col_idx = -1
-                    
                     for idx, h in enumerate(headers):
                         h_up = str(h).upper()
                         if "STYLE ID" in h_up and "LINK" not in h_up:
                             style_col_idx = idx + 1
-                        elif "LINK" in h_up:
-                            link_col_idx = idx + 1
-                        elif h_up == "PHOTO" or h_up.startswith("PHOTO_"):
-                            photo_col_idx = idx + 1
                             
                     existing_styles = [str(row[style_col_idx - 1]) for row in all_vals[1:]] if style_col_idx != -1 and len(all_vals) > 1 else []
                     
                     if style_id in existing_styles:
                         st.sidebar.warning(f"Style ID {style_id} pehle se sheet me maujood hai!")
                     else:
-                        # Live data fetch karna
                         live_data = fetch_live_style_data(style_id)
+                        today_str = datetime.datetime.now().strftime("%d/%m/%Y")
                         
-                        # Nayi row create karna headers ke mutabiq
                         new_row_dict = {}
                         for idx, h in enumerate(headers):
                             h_str = str(h).strip()
@@ -203,8 +191,6 @@ if st.sidebar.button("Add to Google Sheet"):
                             elif h_up == "PHOTO" or h_up.startswith("PHOTO_"):
                                 new_row_dict[idx] = live_data["image"]
                             else:
-                                # Aaj ki date ka column check karna (e.g. 07/11/2026)
-                                today_str = datetime.datetime.now().strftime("%d/%m/%Y")
                                 if today_str in h_str:
                                     if "STAR" in h_up:
                                         new_row_dict[idx] = live_data["star"]
@@ -219,7 +205,6 @@ if st.sidebar.button("Add to Google Sheet"):
                                 else:
                                     new_row_dict[idx] = ""
                                     
-                        # List me convert karke append karna
                         final_row = [new_row_dict.get(i, "") for i in range(len(headers))]
                         sheet.append_row(final_row)
                         
@@ -230,6 +215,59 @@ if st.sidebar.button("Add to Google Sheet"):
                     st.sidebar.error(f"Error adding style: {e}")
         else:
             st.sidebar.error("Kripya valid Style ID ya Link enter karein!")
+
+# Auto-fill missing today's data for existing rows if empty
+if st.sidebar.button("⚡ Auto-Fill Today's Missing Data"):
+    with st.spinner("Checking and filling missing today's data for existing styles..."):
+        try:
+            scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+            creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope) if os.path.exists("credentials.json") else ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
+            client = gspread.authorize(creds)
+            sheet = client.open(SHEET_NAME).sheet1
+            
+            all_vals = sheet.get_all_values()
+            headers = all_vals[0] if all_vals else []
+            today_str = datetime.datetime.now().strftime("%d/%m/%Y")
+            
+            style_col_idx = -1
+            for idx, h in enumerate(headers):
+                if "STYLE ID" in str(h).upper() and "LINK" not in str(h).upper():
+                    style_col_idx = idx
+                    break
+                    
+            if style_col_idx != -1:
+                updates = []
+                for row_idx, row in enumerate(all_vals[1:], start=2):
+                    style_id = row[style_col_idx].strip()
+                    if style_id:
+                        # Check if today's price column is empty
+                        for col_idx, h in enumerate(headers):
+                            h_str = str(h).strip()
+                            if today_str in h_str and (col_idx >= len(row) or not row[col_idx].strip()):
+                                # Missing data fetch karke update list me daalna
+                                live_data = fetch_live_style_data(style_id)
+                                h_up = h_str.upper()
+                                val = live_data["price"]
+                                if "STAR" in h_up:
+                                    val = live_data["star"]
+                                elif "REVIEW" in h_up:
+                                    val = live_data["reviews"]
+                                elif "OUT OF STOCK" in h_up:
+                                    val = live_data["oos"]
+                                elif "SELLER" in h_up:
+                                    val = live_data["seller"]
+                                
+                                updates.append(gspread.Cell(row_idx, col_idx + 1, val))
+                                
+                if updates:
+                    sheet.update_cells(updates)
+                    st.sidebar.success(f"Total {len(updates)} missing fields aaj ki date ke liye update kar diye gaye hain!")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.sidebar.info("Sabhi existing styles me aaj ka data pehle se maujood hai!")
+        except Exception as e:
+            st.sidebar.error(f"Error auto-filling data: {e}")
 
 cols = list(df.columns)
 dates = []
