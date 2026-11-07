@@ -1,477 +1,287 @@
-import streamlit as st
-import pandas as pd
-import datetime
-import os
-import sys
-import subprocess
 import re
-import json
-import requests
-from bs4 import BeautifulSoup
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+
+import pandas as pd
+import streamlit as st
+
+import myntra_core as core
 
 st.set_page_config(page_title="Myntra Price & Stock Tracker", page_icon="🛍️", layout="wide")
 
-SHEET_NAME = "MYNTRA PRICE"
 
-if not os.path.exists("credentials.json") and "gcp_service_account" in st.secrets:
+# ======================= Google Sheet se data =======================
+
+def secret_info():
+    """Streamlit Cloud ke Secrets me [gcp_service_account] ho to wo, warna None (credentials.json use hoga)"""
     try:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        with open("credentials.json", "w") as f:
-            json.dump(creds_dict, f)
-    except Exception as e:
-        st.error(f"Credentials file banane me error: {e}")
-
-def fetch_live_style_data(style_id):
-    """Myntra API aur HTML scraping fallback ke sath live price, ratings, reviews aur image fetch karta hai."""
-    data_out = {"price": "", "star": "", "reviews": "", "image": "", "oos": "NONE", "seller": ""}
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.myntra.com/"
-    }
-    
-    # 1. API Try karna
-    try:
-        api_url = f"https://www.myntra.com/gateway/v2/product/{style_id}"
-        res = requests.get(api_url, headers={"User-Agent": headers["User-Agent"], "Accept": "application/json"}, timeout=8)
-        if res.status_code == 200:
-            j = res.json()
-            price_info = j.get("price", {})
-            mrp = price_info.get("mrp", 0)
-            discounted = price_info.get("discounted", 0)
-            final_price = discounted if discounted > 0 else mrp
-            if final_price > 0:
-                data_out["price"] = f"₹{final_price}"
-            
-            rating_info = j.get("rating", {})
-            ratings_val = rating_info.get("averageRating", 0)
-            review_count = rating_info.get("totalCount", 0)
-            if ratings_val:
-                data_out["star"] = str(ratings_val)
-            if review_count:
-                data_out["reviews"] = str(review_count)
-                
-            search_image = j.get("searchImage")
-            if search_image:
-                data_out["image"] = search_image
-            else:
-                views = j.get("views", {})
-                if "default" in views:
-                    img_info = views["default"].get("image1")
-                    if img_info and "secureUrl" in img_info:
-                        data_out["image"] = img_info["secureUrl"]
-                        
-            sizes = j.get("sizes", [])
-            if sizes:
-                avail_sizes = [s.get("label") for s in sizes if s.get("available")]
-                all_sizes = [s.get("label") for s in sizes]
-                if not avail_sizes:
-                    data_out["oos"] = f"ALL: {', '.join(all_sizes)}"
-                else:
-                    data_out["oos"] = f"{', '.join(avail_sizes)}"
-    except Exception as e:
-        print(f"API fetch error: {e}")
-
-    # 2. Agar API se data na mile toh HTML page scrape karna
-    if not data_out["price"] or not data_out["image"]:
-        try:
-            page_url = f"https://www.myntra.com/{style_id}"
-            page_res = requests.get(page_url, headers=headers, timeout=10)
-            if page_res.status_code == 200:
-                soup = BeautifulSoup(page_res.text, 'html.parser')
-                meta_img = soup.find("meta", property="og:image")
-                if meta_img and meta_img.get("content"):
-                    data_out["image"] = meta_img["content"]
-                
-                match = re.search(r'window\.__myx\s*=\s*(\{.*?\});?</script>', page_res.text, re.DOTALL)
-                if match:
-                    pdp_data = json.loads(match.group(1)).get("pdpData", {})
-                    if not data_out["price"]:
-                        price = pdpData.get("price", {}).get("discounted") or pdpData.get("price", {}).get("mrp")
-                        if price:
-                            data_out["price"] = f"₹{price}"
-                    if not data_out["star"]:
-                        rating = pdpData.get("ratings", {}).get("averageRating")
-                        if rating:
-                            data_out["star"] = str(rating)
-                    if not data_out["reviews"]:
-                        reviews = pdpData.get("ratings", {}).get("totalCount")
-                        if reviews:
-                            data_out["reviews"] = str(reviews)
-        except Exception as e:
-            print(f"HTML scrape error: {e}")
-
-    if not data_out["image"]:
-        data_out["image"] = f"https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/{style_id}/default/image.jpg"
-        
-    return data_out
-
-@st.cache_data(ttl=60)
-def load_data():
-    try:
-        if os.path.exists("credentials.json"):
-            scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-            creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-            client = gspread.authorize(creds)
-        else:
-            return None
-
-        spreadsheet = client.open(SHEET_NAME)
-        sheet = spreadsheet.sheet1
-        rows = sheet.get_all_values()
-        
-        if not rows or len(rows) < 2:
-            return None
-
-        df = pd.DataFrame(rows[1:], columns=rows[0])
-        
-        new_cols = []
-        seen = {}
-        for c in df.columns:
-            c_str = str(c).strip()
-            if c_str in seen:
-                seen[c_str] += 1
-                new_cols.append(f"{c_str}_{seen[c_str]}")
-            else:
-                seen[c_str] = 0
-                new_cols.append(c_str)
-        df.columns = new_cols
-        
-        if df.empty:
-            return None
-
-        return df
-    except Exception as e:
-        st.error(f"Google Sheet load karne me error aaya: {e}")
+        return dict(st.secrets["gcp_service_account"])
+    except Exception:
         return None
 
-df = load_data()
 
-if df is None:
-    st.error("Google Sheet ('MYNTRA PRICE') load nahi ho payi. Kripya credentials check karein.")
-    st.stop()
+@st.cache_resource(ttl=3000, show_spinner=False)
+def get_sheet():
+    return core.open_sheet(secret_info())
 
-st.title("🛍️ Myntra Catalog & Price Tracker Dashboard")
-st.markdown("Aapke e-commerce products ka live tracking, price fluctuation, stock status aur ratings analysis.")
 
-st.sidebar.header("⚙️ Dashboard Controls")
+@st.cache_data(ttl=60, show_spinner="Google Sheet se data aa raha hai...")
+def load_data():
+    values = get_sheet().get_all_values()
+    if len(values) < 2:
+        return pd.DataFrame()
+    names, seen = [], {}
+    for h in values[0]:
+        h = str(h).strip()
+        if h in seen:               # duplicate header (jaise 2 'SOR TP') ko alag naam do
+            seen[h] += 1
+            names.append(f"{h}_{seen[h]}")
+        else:
+            seen[h] = 0
+            names.append(h)
+    width = len(names)
+    rows = [(r + [""] * width)[:width] for r in values[1:]]
+    return pd.DataFrame(rows, columns=names)
 
-if st.sidebar.button("🔄 Run Tracker Script (Update Data)", type="primary"):
-    with st.spinner("Myntra se latest data aur images fetch ho rahi hain... Please wait..."):
-        try:
-            result = subprocess.run([sys.executable, "myntra_excel_tracker.py"], capture_output=True, text=True, timeout=120)
-            if result.returncode == 0:
-                st.sidebar.success("Data successfully update ho gaya!")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.sidebar.error(f"Error: {result.stderr}")
-        except Exception as e:
-            st.sidebar.error(f"Script run karne me dikkat aayi: {e}")
 
-if st.sidebar.button("🔄 Refresh & Clear Cache"):
+def to_num(series):
+    return pd.to_numeric(series.astype(str).str.replace(r"[^0-9.\-]", "", regex=True), errors="coerce")
+
+
+def clear_and_rerun():
     st.cache_data.clear()
     st.rerun()
 
-st.sidebar.markdown("---")
 
-# Add New Style ID Section in Sidebar
-st.sidebar.subheader("➕ Add New Style ID")
-new_style_input = st.sidebar.text_input("Enter Style ID or Link")
-if st.sidebar.button("Add to Google Sheet"):
-    if new_style_input:
-        numbers = re.findall(r'\d+', new_style_input)
-        if numbers:
-            style_id = numbers[-1]
-            with st.spinner(f"Fetching live data & adding Style ID {style_id}..."):
-                try:
-                    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-                    creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope) if os.path.exists("credentials.json") else ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
-                    client = gspread.authorize(creds)
-                    sheet = client.open(SHEET_NAME).sheet1
-                    
-                    all_vals = sheet.get_all_values()
-                    headers = all_vals[0] if all_vals else []
-                    today_str = datetime.datetime.now().strftime("%d/%m/%Y")
-                    
-                    style_col_idx = -1
-                    for idx, h in enumerate(headers):
-                        if "STYLE ID" in str(h).upper() and "LINK" not in str(h).upper():
-                            style_col_idx = idx + 1
-                            
-                    existing_styles = [str(row[style_col_idx - 1]) for row in all_vals[1:]] if style_col_idx != -1 and len(all_vals) > 1 else []
-                    
-                    if style_id in existing_styles:
-                        st.sidebar.warning(f"Style ID {style_id} pehle se sheet me maujood hai!")
-                    else:
-                        live_data = fetch_live_style_data(style_id)
-                        new_row_dict = {}
-                        
-                        for idx, h in enumerate(headers):
-                            h_str = str(h).strip()
-                            h_up = h_str.upper()
-                            
-                            if "STYLE ID" in h_up and "LINK" not in h_up:
-                                new_row_dict[idx] = str(style_id)
-                            elif "LINK" in h_up:
-                                new_row_dict[idx] = f"https://www.myntra.com/{style_id}"
-                            elif h_up == "PHOTO" or h_up.startswith("PHOTO_"):
-                                new_row_dict[idx] = live_data["image"]
-                            else:
-                                if today_str in h_str:
-                                    if "STAR" in h_up:
-                                        new_row_dict[idx] = live_data["star"]
-                                    elif "REVIEW" in h_up:
-                                        new_row_dict[idx] = live_data["reviews"]
-                                    elif "OUT OF STOCK" in h_up:
-                                        new_row_dict[idx] = live_data["oos"]
-                                    elif "SELLER" in h_up:
-                                        new_row_dict[idx] = live_data["seller"]
-                                    else:
-                                        new_row_dict[idx] = live_data["price"]
-                                else:
-                                    new_row_dict[idx] = ""
-                                    
-                        final_row = [new_row_dict.get(i, "") for i in range(len(headers))]
-                        sheet.append_row(final_row)
-                        
-                        st.sidebar.success(f"Style ID {style_id} successfully add ho gaya!")
-                        st.cache_data.clear()
-                        st.rerun()
-                except Exception as e:
-                    st.sidebar.error(f"Error adding style: {e}")
-        else:
-            st.sidebar.error("Kripya valid Style ID ya Link enter karein!")
+try:
+    df = load_data()
+except Exception as e:
+    st.error(f"Google Sheet ('{core.SHEET_NAME}') load nahi ho payi: {e}")
+    st.info("Check karo: (1) Streamlit Secrets me [gcp_service_account] sahi hai, "
+            "(2) sheet ka naam exactly 'MYNTRA PRICE' hai, "
+            "(3) sheet service account ki email ke saath Editor access me share ki hai.")
+    st.stop()
 
-# Auto-Fill Today's Missing Data (Purane aur naye sabhi styles ke liye)
-if st.sidebar.button("⚡ Auto-Fill Today's Missing Data"):
-    with st.spinner("Checking and filling missing today's data..."):
-        try:
-            scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-            creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope) if os.path.exists("credentials.json") else ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
-            client = gspread.authorize(creds)
-            sheet = client.open(SHEET_NAME).sheet1
-            
-            all_vals = sheet.get_all_values()
-            headers = all_vals[0] if all_vals else []
-            today_str = datetime.datetime.now().strftime("%d/%m/%Y")
-            
-            style_col_idx = -1
-            for idx, h in enumerate(headers):
-                if "STYLE ID" in str(h).upper() and "LINK" not in str(h).upper():
-                    style_col_idx = idx
-                    break
-                    
-            if style_col_idx != -1:
-                updates = []
-                # Cache fetched data per style ID to avoid redundant requests
-                fetched_cache = {}
-                
-                for row_idx, row in enumerate(all_vals[1:], start=2):
-                    style_val = row[style_col_idx].strip()
-                    # Style ID extract karna (chahe number ho ya link)
-                    numbers = re.findall(r'\d+', style_val)
-                    if numbers:
-                        style_id = numbers[-1]
-                        
-                        for col_idx, h in enumerate(headers):
-                            h_str = str(h).strip()
-                            # Check if header contains today's date and cell is empty
-                            if today_str in h_str:
-                                cell_val = row[col_idx] if col_idx < len(row) else ""
-                                if not cell_val.strip():
-                                    if style_id not in fetched_cache:
-                                        fetched_cache[style_id] = fetch_live_style_data(style_id)
-                                    
-                                    live_data = fetched_cache[style_id]
-                                    h_up = h_str.upper()
-                                    val = live_data["price"]
-                                    if "STAR" in h_up:
-                                        val = live_data["star"]
-                                    elif "REVIEW" in h_up:
-                                        val = live_data["reviews"]
-                                    elif "OUT OF STOCK" in h_up:
-                                        val = live_data["oos"]
-                                    elif "SELLER" in h_up:
-                                        val = live_data["seller"]
-                                    
-                                    if val:
-                                        updates.append(gspread.Cell(row_idx, col_idx + 1, val))
-                                        
-                if updates:
-                    sheet.update_cells(updates)
-                    st.sidebar.success(f"Successfully updated {len(updates)} missing fields for today ({today_str})!")
-                    st.cache_data.clear()
-                    st.rerun()
-                else:
-                    st.sidebar.info("Aaj ka data sabhi styles me pehle se maujood hai!")
-        except Exception as e:
-            st.sidebar.error(f"Error auto-filling data: {e}")
+if df.empty:
+    st.warning("Sheet khali hai ya usme data nahi mila.")
+    st.stop()
 
-cols = list(df.columns)
-dates = []
-
-for c in cols:
-    m = re.search(r"(\d{2}/\d{2}/\d{4})", str(c))
-    if m:
-        d_str = m.group(1)
-        if d_str not in dates:
-            dates.append(d_str)
-
-dates = sorted(dates, key=lambda x: x[6:10] + x[3:5] + x[0:2])
+# ---- Columns ko samjho: kaun si base hai, kaun si date wali ----
+meta = {c: core.parse_header(c) for c in df.columns}                   # col -> (date, metric)
+base_cols = [c for c in df.columns if meta[c][0] is None]
+date_cols = [c for c in df.columns if meta[c][0] is not None]
+dates = sorted({meta[c][0] for c in date_cols}, key=lambda d: d[6:10] + d[3:5] + d[0:2])
 latest_date = dates[-1] if dates else None
 
-view_mode = st.sidebar.radio("Navigation", ["📊 Clean Price & Stock Table", "⭐ Top Rated Products", "📈 Product Trend Analysis"])
+sid_col = base_cols[core.find_col(base_cols, "STYLE ID", exclude_link=True)] \
+    if core.find_col(base_cols, "STYLE ID", exclude_link=True) >= 0 else None
+photo_idx = core.find_col(base_cols, "PHOTO")
+photo_col = base_cols[photo_idx] if photo_idx >= 0 else None
+link_col = next((c for c in base_cols if "LINK" in c.upper()), None)
 
-if view_mode == "📊 Clean Price & Stock Table":
-    st.subheader("📊 Clean Product Price & History Table")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        search_query = st.text_input("🔍 Search (Style ID, Seller, Size, etc.)", "")
-    with col2:
-        selected_dates = st.multiselect("📅 Filter by Date Columns", options=dates, default=dates[-1:] if dates else [])
-    with col3:
-        all_metrics = ["SELLING PRICE", "STAR", "REVIEWS", "OUT OF STOCK", "SELLERS"]
-        selected_metrics = st.multiselect("🎯 Select Metrics to Show", options=all_metrics, default=all_metrics)
-    with col4:
-        stock_filter = st.selectbox("📦 Stock Status Filter", ["All", "In Stock (NONE)", "Out of Stock (ALL)"])
-        
-    filtered_df = df.copy()
-    
-    if search_query:
-        mask = filtered_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)
-        filtered_df = filtered_df[mask]
-        
-    if selected_dates:
-        base_cols = [c for c in df.columns if not re.search(r"\d{2}/\d{2}/\d{4}", str(c))]
-        
-        keep_cols = list(base_cols)
-        for d in selected_dates:
-            for col in df.columns:
-                if d in str(col):
-                    col_upper = str(col).upper()
-                    is_matched = False
-                    if "STAR" in col_upper and "STAR" in selected_metrics:
-                        is_matched = True
-                    elif ("REVIEW" in col_upper) and "REVIEWS" in selected_metrics:
-                        is_matched = True
-                    elif "OUT OF STOCK" in col_upper and "OUT OF STOCK" in selected_metrics:
-                        is_matched = True
-                    elif ("SELLER" in col_upper) and "SELLERS" in selected_metrics:
-                        is_matched = True
-                    elif not any(x in col_upper for x in ["STAR", "REVIEW", "OUT OF STOCK", "SELLER"]) and "SELLING PRICE" in selected_metrics:
-                        is_matched = True
-                        
-                    if is_matched and col not in keep_cols:
-                        keep_cols.append(col)
-        
-        existing_keep_cols = [c for c in keep_cols if c in filtered_df.columns]
-        filtered_df = filtered_df[existing_keep_cols]
 
-    if selected_dates and len(selected_dates) > 0 and stock_filter != "All":
-        for selected_date in selected_dates:
-            oos_cols = [c for c in filtered_df.columns if selected_date in str(c) and "OUT OF STOCK" in str(c).upper()]
-            for oos_col in oos_cols:
-                if stock_filter == "In Stock (NONE)":
-                    filtered_df = filtered_df[filtered_df[oos_col] == "NONE"]
-                elif stock_filter == "Out of Stock (ALL)":
-                    filtered_df = filtered_df[filtered_df[oos_col].astype(str).str.startswith("ALL")]
+def metric_col(date, metric):
+    for c in date_cols:
+        if meta[c] == (date, metric):
+            return c
+    return None
 
-    st.metric("Total Products Displayed", len(filtered_df))
-    
-    multi_tuples = []
-    for col in filtered_df.columns:
-        col_str = str(col).strip()
-        col_upper = col_str.upper()
-        
-        m = re.search(r"(\d{2}/\d{2}/\d{4})", col_str)
-        if m:
-            date_part = m.group(1)
-            sub_name = col_str.replace(date_part, "").strip(" -_")
-            if not sub_name:
-                sub_name = "SELLING PRICE"
-            multi_tuples.append((date_part, sub_name.upper()))
+
+def flat_name(c):
+    d, m = meta[c]
+    return f"{d} {m}" if d else c
+
+
+def show_table(data, config=None, height=600, row_height=64):
+    """st.dataframe ko alag alag streamlit versions par chalane ke liye"""
+    base = dict(hide_index=True, height=height, column_config=config or {})
+    rh = {"row_height": row_height} if row_height else {}
+    for extra in (dict(width="stretch", **rh), dict(use_container_width=True, **rh), dict(use_container_width=True)):
+        try:
+            return st.dataframe(data, **base, **extra)
+        except TypeError:
+            continue
+
+
+def base_config():
+    cfg = {}
+    if photo_col:
+        cfg[photo_col] = st.column_config.ImageColumn("PHOTO", width="small")
+    if link_col:
+        cfg[link_col] = st.column_config.LinkColumn(link_col, display_text=r"myntra\.com/(\d+)")
+    return cfg
+
+
+# ======================= Sidebar =======================
+
+st.title("🛍️ Myntra Catalog & Price Tracker Dashboard")
+st.caption("Products ka price, stock, rating aur reviews ka tracking. Aaj ki date: " + core.today_str())
+
+st.sidebar.header("⚙️ Dashboard Controls")
+
+force = st.sidebar.checkbox("Sab products dobara fetch karo", value=False,
+                            help="Band rakho to sirf wahi products fetch honge jinka aaj ka data abhi nahi aaya.")
+if st.sidebar.button("⚡ Aaj ka data update karo", type="primary"):
+    bar = st.sidebar.progress(0.0, text="Myntra se data aa raha hai...")
+    try:
+        result = core.update_today(
+            get_sheet(), force=force,
+            progress=lambda done, total: bar.progress(done / max(total, 1), text=f"{done}/{total} products"))
+        bar.empty()
+        msg = (f"{result['date']}: {result['fetched']} products check hue, "
+               f"{result['photos']} nayi photos, {result['errors']} me data nahi mila.")
+        if result["fetched"] and result["errors"] == result["fetched"]:
+            msg += " Saare products fail hue - Myntra is server ko block kar raha ho sakta hai. " \
+                   "Aisa ho to apne computer par `python myntra_excel_tracker.py` chalao."
+            st.session_state["flash"] = ("warning", msg)
         else:
-            multi_tuples.append(("General Details", col_upper))
-            
-    filtered_df.columns = pd.MultiIndex.from_tuples(multi_tuples)
+            st.session_state["flash"] = ("success", msg)
+        clear_and_rerun()
+    except Exception as e:
+        bar.empty()
+        st.sidebar.error(f"Update me error: {e}")
 
-    st.dataframe(filtered_df, use_container_width=True, height=600)
+if "flash" in st.session_state:
+    kind, text = st.session_state.pop("flash")
+    getattr(st.sidebar, kind)(text)
+
+if st.sidebar.button("🔄 Refresh (cache clear)"):
+    clear_and_rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("➕ Naya Style ID jodo")
+new_style_input = st.sidebar.text_input("Style ID ya Myntra link")
+if st.sidebar.button("Google Sheet me jodo"):
+    with st.spinner("Live data la raha hoon..."):
+        try:
+            ok, text = core.add_style(get_sheet(), new_style_input)
+        except Exception as e:
+            ok, text = False, f"Error: {e}"
+    if ok:
+        st.session_state["flash"] = ("success", text)
+        clear_and_rerun()
+    else:
+        st.sidebar.error(text)
+
+view_mode = st.sidebar.radio("Navigation", ["📊 Price & Stock Table", "⭐ Top Rated Products",
+                                            "📈 Product Trend Analysis"])
+
+# ======================= 1. Table =======================
+
+if view_mode == "📊 Price & Stock Table":
+    st.subheader("📊 Product Price & Stock Table")
+    all_metrics = []
+    for c in date_cols:
+        if meta[c][1] not in all_metrics:
+            all_metrics.append(meta[c][1])
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        search = st.text_input("🔍 Search (Style ID, Seller, Size...)", "")
+    with c2:
+        sel_dates = st.multiselect("📅 Dates", options=dates, default=dates[-1:])
+    with c3:
+        sel_metrics = st.multiselect("🎯 Columns dikhao", options=all_metrics, default=all_metrics)
+    with c4:
+        stock_filter = st.selectbox("📦 Stock filter (sabse nayi date ka)",
+                                    ["All", "Koi size out nahi (NONE)", "Kuch sizes out", "Saare sizes out (ALL)"])
+
+    view = df
+    if search:
+        mask = view.apply(lambda col: col.astype(str).str.contains(search, case=False, na=False, regex=False)).any(axis=1)
+        view = view[mask]
+
+    if stock_filter != "All" and sel_dates:
+        oos = metric_col(max(sel_dates, key=lambda d: d[6:10] + d[3:5] + d[0:2]), "OUT OF STOCK")
+        if oos:
+            v = view[oos].astype(str).str.strip().str.upper()
+            if stock_filter.startswith("Koi"):
+                view = view[v == "NONE"]
+            elif stock_filter.startswith("Kuch"):
+                view = view[(v != "NONE") & (v != "") & (~v.str.startswith("ALL")) & (v != "N/A")]
+            else:
+                view = view[v.str.startswith("ALL")]
+
+    show = list(base_cols)
+    sel_dates = sorted(sel_dates, key=lambda d: d[6:10] + d[3:5] + d[0:2])
+    for d in sel_dates:
+        for c in date_cols:
+            if meta[c][0] == d and meta[c][1] in sel_metrics:
+                show.append(c)
+    view = view[show].copy()
+    cfg = base_config()
+    for c in show:
+        if meta[c][0]:
+            cfg[c] = st.column_config.TextColumn(flat_name(c))
+    st.metric("Products", len(view))
+    show_table(view, cfg)
+
+# ======================= 2. Top rated =======================
 
 elif view_mode == "⭐ Top Rated Products":
-    st.subheader("⭐ Top Rated Products Leaderboard")
-    col1, col2 = st.columns(2)
-    with col1:
-        top_n = st.selectbox("Show Top", [10, 20, 50], index=0)
-    with col2:
-        min_rev = st.number_input("Minimum Reviews", min_value=0, value=10)
-        
-    if latest_date:
-        star_cols = [c for c in df.columns if latest_date in str(c) and "STAR" in str(c).upper()]
-        rev_cols = [c for c in df.columns if latest_date in str(c) and "REVIEWS" in str(c).upper()]
-        
-        if star_cols and rev_cols:
-            star_col = star_cols[0]
-            rev_col = rev_cols[0]
-            top_df = df.copy()
-            top_df[star_col] = pd.to_numeric(top_df[star_col], errors='coerce').fillna(0)
-            top_df[rev_col] = pd.to_numeric(top_df[rev_col], errors='coerce').fillna(0)
-            
-            top_df = top_df[(top_df[star_col] > 0) & (top_df[rev_col] >= min_rev)]
-            top_df = top_df.sort_values(by=[star_col, rev_col], ascending=[False, False]).head(top_n)
-            
-            st.dataframe(top_df, use_container_width=True, height=500)
+    st.subheader("⭐ Top Rated Products (pichle 7 din ki history ke saath)")
+    c1, c2 = st.columns(2)
+    top_n = c1.selectbox("Top", [10, 20, 50], index=0)
+    min_rev = c2.number_input("Minimum reviews", min_value=0, value=10)
 
-elif view_mode == "📈 Product Trend Analysis":
-    st.subheader("📈 Style Price & Rating History Trend")
-    style_ids = df['STYLE ID'].astype(str).tolist() if 'STYLE ID' in df.columns else []
-    selected_style = st.selectbox("Select Style ID", style_ids)
-    
-    if selected_style:
-        prod_row = df[df['STYLE ID'].astype(str) == str(selected_style)]
-        if not prod_row.empty:
-            photo_url = ""
-            for col in prod_row.columns:
-                val = str(prod_row[col].values[0]).strip()
-                if val.startswith("http"):
-                    photo_url = val
-                    break
-            if photo_url:
-                st.image(photo_url, width=120)
-            
-            history_data = []
-            for d in dates:
-                p_cols = [c for c in prod_row.columns if d in str(c) and ("SELLING PRICE" in str(c).upper() or c == d)]
-                s_cols = [c for c in prod_row.columns if d in str(c) and "STAR" in str(c).upper()]
-                r_cols = [c for c in prod_row.columns if d in str(c) and "REVIEWS" in str(c).upper()]
-                
-                price_val = prod_row[p_cols[0]].values[0] if p_cols else None
-                star_val = prod_row[s_cols[0]].values[0] if s_cols else None
-                rev_val = prod_row[r_cols[0]].values[0] if r_cols else None
-                
-                p_num = float(re.sub(r'[^0-9.]', '', str(price_val))) if pd.notna(price_val) and re.sub(r'[^0-9.]', '', str(price_val)) else None
-                
-                history_data.append({
-                    "Date": d,
-                    "Price": p_num,
-                    "Star": pd.to_numeric(star_val, errors='coerce'),
-                    "Reviews": pd.to_numeric(rev_val, errors='coerce')
-                })
-                
-            hist_df = pd.DataFrame(history_data)
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("#### Price Trend (₹)")
-                if not hist_df['Price'].dropna().empty:
-                    st.line_chart(hist_df.set_index("Date")['Price'])
-            with col2:
-                st.markdown("#### Star Rating Trend (★)")
-                if not hist_df['Star'].dropna().empty:
-                    st.line_chart(hist_df.set_index("Date")['Star'])
-            st.markdown("#### Detailed History Table")
-            st.dataframe(hist_df, use_container_width=True)
+    star_c = metric_col(latest_date, "STAR") if latest_date else None
+    rev_c = metric_col(latest_date, "REVIEWS") if latest_date else None
+    if not (star_c and rev_c):
+        st.info("Abhi star / reviews ka data nahi hai. Pehle 'Aaj ka data update karo' dabao.")
+    else:
+        top = pd.DataFrame(index=df.index)
+        if photo_col:
+            top["PHOTO"] = df[photo_col]
+        if link_col:
+            top["LINK"] = df[link_col]
+        top["STYLE ID"] = df[sid_col] if sid_col else ""
+        price_c = metric_col(latest_date, "PRICE")
+        if price_c:
+            top["PRICE"] = df[price_c]
+        top["STAR"] = to_num(df[star_c])
+        top["REVIEWS"] = to_num(df[rev_c])
+        for d in dates[-7:]:
+            sc = metric_col(d, "STAR")
+            if sc:
+                top[f"★ {d[:5]}"] = to_num(df[sc])
+        top = top[(top["STAR"] > 0) & (top["REVIEWS"] >= min_rev)]
+        top = top.sort_values(["STAR", "REVIEWS"], ascending=False).head(top_n).reset_index(drop=True)
+        top.insert(0, "#", range(1, len(top) + 1))
+        cfg = {"PHOTO": st.column_config.ImageColumn("PHOTO", width="small"),
+               "LINK": st.column_config.LinkColumn("LINK", display_text=r"myntra\.com/(\d+)"),
+               "STAR": st.column_config.NumberColumn("STAR", format="%.1f"),
+               "REVIEWS": st.column_config.NumberColumn("REVIEWS", format="%d")}
+        if top.empty:
+            st.info("Is 'Minimum reviews' ke saath koi product nahi mila. Minimum reviews kam karke dekho.")
+        else:
+            show_table(top, cfg, height=min(80 + 64 * len(top), 750))
+
+# ======================= 3. Trend =======================
+
+else:
+    st.subheader("📈 Style ka Price & Rating History Trend")
+    if not sid_col:
+        st.warning("Sheet me 'STYLE ID' column nahi mila.")
+        st.stop()
+    options = [s for s in df[sid_col].astype(str).tolist() if s.strip()]
+    chosen = st.selectbox("Style ID chuno", options)
+    row = df[df[sid_col].astype(str) == str(chosen)].iloc[0]
+    if photo_col and str(row[photo_col]).startswith("http"):
+        st.image(str(row[photo_col]), width=140)
+
+    hist = []
+    for d in dates:
+        def val(metric):
+            c = metric_col(d, metric)
+            return to_num(pd.Series([row[c]])).iloc[0] if c else None
+        hist.append({"Date": d, "Price": val("PRICE"), "Star": val("STAR"), "Reviews": val("REVIEWS")})
+    hist_df = pd.DataFrame(hist)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### Price Trend (₹)")
+        if hist_df["Price"].notna().any():
+            st.line_chart(hist_df.set_index("Date")["Price"])
+    with c2:
+        st.markdown("#### Star Rating Trend (★)")
+        if hist_df["Star"].notna().any():
+            st.line_chart(hist_df.set_index("Date")["Star"])
+    st.markdown("#### Detailed History")
+    show_table(hist_df, height=min(80 + 36 * len(hist_df), 500), row_height=None)
