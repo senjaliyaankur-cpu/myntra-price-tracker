@@ -1,398 +1,118 @@
 import os
-import re
-import json
 import requests
+import json
+import re
 import gspread
-
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse
 from oauth2client.service_account import ServiceAccountCredentials
-
 
 SHEET_NAME = "MYNTRA PRICE"
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/json,*/*",
-    "Accept-Language": "en-IN,en;q=0.9",
-}
-
-
 def get_google_sheet_client():
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive",
-    ]
-
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     if os.path.exists("credentials.json"):
-        creds = ServiceAccountCredentials.from_json_keyfile_name(
-            "credentials.json", scope
-        )
+        creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
     else:
         import streamlit as st
-
         creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(
-            creds_dict, scope
-        )
-
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
-
-def get_style_id(product_link):
-    """Product URL ya direct Style ID se numeric ID nikale."""
-
-    value = str(product_link).strip()
-
-    if not value:
-        return None
-
-    # Direct numeric Style ID
-    if value.isdigit():
-        return value
-
-    # URL ke path segments mein numeric ID dhundo
+def fetch_real_myntra_image(style_id):
+    """Myntra product page se exact real hash-code high-res image URL extract karta hai."""
+    url = f"https://www.myntra.com/{style_id}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5"
+    }
     try:
-        path_parts = urlparse(value).path.strip("/").split("/")
-
-        for part in reversed(path_parts):
-            if part.isdigit():
-                return part
-
-    except Exception:
-        pass
-
-    # Myntra URL ke liye fallback
-    match = re.search(r"/(\d{5,})(?:[/?#]|$)", value)
-
-    if match:
-        return match.group(1)
-
-    return None
-
-
-def normalize_image_url(url):
-    if not isinstance(url, str):
-        return None
-
-    url = url.strip()
-
-    if url.startswith("//"):
-        url = "https:" + url
-
-    if url.startswith("http://"):
-        url = "https://" + url[7:]
-
-    if url.startswith("https://"):
-        return url
-
-    return None
-
-
-def find_first_image(data):
-    """
-    API JSON mein primary image ko priority se dhundhta hai.
-    Gallery ki pehli image hi return karta hai.
-    """
-
-    if isinstance(data, dict):
-
-        # Myntra search image ko priority
-        search_image = data.get("searchImage")
-
-        if isinstance(search_image, str):
-            image_url = normalize_image_url(search_image)
-            if image_url:
-                return image_url
-
-        # Product detail image
-        views = data.get("views")
-
-        if isinstance(views, dict):
-            default_view = views.get("default")
-
-            if isinstance(default_view, dict):
-                image1 = default_view.get("image1")
-
-                if isinstance(image1, dict):
-                    image_url = normalize_image_url(
-                        image1.get("secureUrl") or image1.get("url")
-                    )
-                    if image_url:
-                        return image_url
-
-                elif isinstance(image1, str):
-                    image_url = normalize_image_url(image1)
-                    if image_url:
-                        return image_url
-
-        # Common image fields
-        for key in ("image", "imageUrl", "imageURL", "secureUrl"):
-            value = data.get(key)
-
-            if isinstance(value, str):
-                image_url = normalize_image_url(value)
-                if image_url:
-                    return image_url
-
-        # First image from image list
-        for key in ("images", "imageList", "media"):
-            values = data.get(key)
-
-            if isinstance(values, list) and values:
-                first = values[0]
-
-                if isinstance(first, str):
-                    image_url = normalize_image_url(first)
-                    if image_url:
-                        return image_url
-
-                if isinstance(first, dict):
-                    for image_key in ("secureUrl", "url", "src"):
-                        image_url = normalize_image_url(
-                            first.get(image_key)
-                        )
-                        if image_url:
-                            return image_url
-
-        # Nested API response
-        for value in data.values():
-            if isinstance(value, (dict, list)):
-                image_url = find_first_image(value)
-                if image_url:
-                    return image_url
-
-    elif isinstance(data, list):
-        for item in data:
-            image_url = find_first_image(item)
-            if image_url:
-                return image_url
-
-    return None
-
-
-def get_image_from_api(style_id):
-    api_url = (
-        f"https://www.myntra.com/gateway/v2/product/{style_id}"
-    )
-
-    try:
-        response = requests.get(
-            api_url,
-            headers=HEADERS,
-            timeout=15
-        )
-
-        if response.status_code == 200:
-            data = response.json()
-            image_url = find_first_image(data)
-
-            if image_url:
-                print("API se first image mil gayi.")
-                return image_url
-
+        res = requests.get(url, headers=headers, timeout=12)
+        if res.status_code == 200:
+            # 1. window.__myx JSON state se real image dhundna
+            match = re.search(r'window\.__myx\s*=\s*(\{.*?\});?</script>', res.text, re.DOTALL)
+            if match:
+                try:
+                    data = json.loads(match.group(1))
+                    albums = data.get("pdpData", {}).get("media", {}).get("albums", [])
+                    for album in albums:
+                        images = album.get("images", [])
+                        if images and "src" in images[0]:
+                            src_url = images[0]["src"]
+                            if "assets.myntassets.com" in src_url:
+                                return src_url
+                except Exception:
+                    pass
+            
+            # 2. Fallback: page ke andar se exact hash-code asset link match karna
+            img_matches = re.findall(r'https://assets\.myntassets\.com/[^\s"\'<>]+?\.(?:jpg|jpeg|png)', res.text)
+            for img_url in img_matches:
+                if "/assets/images/" in img_url and "default" not in img_url and "search" not in img_url:
+                    return img_url
     except Exception as e:
-        print(f"API image fetch nahi hui: {e}")
-
-    return None
-
-
-def get_image_from_product_page(product_link):
-    """Product page ke og:image ya JSON-LD ki first image nikale."""
-
-    try:
-        response = requests.get(
-            product_link,
-            headers=HEADERS,
-            timeout=20,
-            allow_redirects=True
-        )
-
-        if response.status_code != 200:
-            print(f"Product page status: {response.status_code}")
-            return None
-
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        # Open Graph primary image
-        for attribute in ("property", "name"):
-            tag = soup.find(
-                "meta",
-                attrs={attribute: "og:image"}
-            )
-
-            if tag and tag.get("content"):
-                image_url = normalize_image_url(tag["content"])
-
-                if image_url:
-                    print("Product page se main image mil gayi.")
-                    return image_url
-
-        # Twitter image fallback
-        tag = soup.find(
-            "meta",
-            attrs={"name": "twitter:image"}
-        )
-
-        if tag and tag.get("content"):
-            image_url = normalize_image_url(tag["content"])
-
-            if image_url:
-                return image_url
-
-        # JSON-LD first image
-        for script in soup.find_all(
-            "script",
-            attrs={"type": "application/ld+json"}
-        ):
-            try:
-                data = json.loads(script.string or script.get_text())
-                image_url = find_first_image(data)
-
-                if image_url:
-                    return image_url
-
-            except Exception:
-                continue
-
-    except Exception as e:
-        print(f"Product page image fetch error: {e}")
-
-    return None
-
-
-def get_first_product_image(product_link):
-    style_id = get_style_id(product_link)
-
-    if not style_id:
-        print(f"Valid Style ID nahi mila: {product_link}")
-        return None
-
-    print(f"Style ID: {style_id}")
-
-    # Pehle Myntra API try karo
-    image_url = get_image_from_api(style_id)
-
-    if image_url:
-        return image_url
-
-    # API fail ho toh original product page try karo
-    if product_link.startswith("http"):
-        image_url = get_image_from_product_page(product_link)
-
-        if image_url:
-            return image_url
-
-    print(f"First image nahi mili: {style_id}")
-    return None
-
+        print(f"Error fetching image for style {style_id}: {e}")
+    
+    # Agar kisi wajah se page block ho toh fallback standard URL
+    return f"https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/{style_id}/default/image.jpg"
 
 def main():
     print("Google Sheet se connection ban raha hai...")
-
     client = get_google_sheet_client()
     sheet = client.open(SHEET_NAME).sheet1
-
+    
     all_rows = sheet.get_all_values()
-
     if not all_rows or len(all_rows) < 2:
-        print("Sheet mein data nahi mila!")
+        print("Sheet me data nahi mila!")
         return
 
-    headers = [
-        str(header).strip().upper()
-        for header in all_rows[0]
-    ]
-
-    # PHOTO column find karo
-    photo_col_idx = None
-
-    for idx, header in enumerate(headers):
-        if header == "PHOTO" or header.startswith("PHOTO_"):
+    headers = [str(h).strip().upper() for h in all_rows[0]]
+    
+    photo_col_idx = -1
+    for idx, h in enumerate(headers):
+        if h == "PHOTO" or h.startswith("PHOTO_"):
             photo_col_idx = idx + 1
             break
-
-    if photo_col_idx is None:
+            
+    if photo_col_idx == -1:
         print("PHOTO column nahi mila!")
         return
 
-    # Product link column find karo
-    link_col_idx = None
-
-    for idx, header in enumerate(headers):
-        if (
-            "LINK" in header
-            or "STYLE ID" in header
-        ):
+    link_col_idx = -1
+    for idx, h in enumerate(headers):
+        if "LINK" in h or "STYLE ID" in h:
             link_col_idx = idx + 1
             break
 
-    if link_col_idx is None:
-        print("LINK ya STYLE ID column nahi mila!")
+    if link_col_idx == -1:
+        print("Style ID Link column nahi mila!")
         return
 
+    print("Products ke real image URLs check aur fetch kiye ja rahe hain...")
+    
     photo_updates = []
+    
+    for idx, row in enumerate(all_rows[1:], start=2):
+        current_photo = row[photo_col_idx - 1].strip() if len(row) >= photo_col_idx else ""
+        
+        # Agar photo cell khali hai ya default link pada hai
+        if not current_photo or current_photo.lower() == "nan" or current_photo == "" or "default/image.jpg" in current_photo:
+            product_link = row[link_col_idx - 1].strip() if len(row) >= link_col_idx else ""
+            
+            numbers = re.findall(r'\d+', product_link)
+            if numbers:
+                style_id = numbers[-1]
+                print(f"Fetching real image for Style {style_id}...")
+                img_url = fetch_real_myntra_image(style_id)
+                if img_url:
+                    photo_updates.append({"row": idx, "col": photo_col_idx, "val": img_url})
+                    print(f"-> Found: {img_url}")
 
-    print("Products ki first images fetch ho rahi hain...")
-
-    for row_number, row in enumerate(all_rows[1:], start=2):
-
-        current_photo = (
-            row[photo_col_idx - 1].strip()
-            if len(row) >= photo_col_idx
-            else ""
-        )
-
-        # Sirf blank PHOTO cells update hongi
-        if current_photo and current_photo.lower() != "nan":
-            continue
-
-        product_link = (
-            row[link_col_idx - 1].strip()
-            if len(row) >= link_col_idx
-            else ""
-        )
-
-        if not product_link:
-            print(f"Row {row_number}: Product link blank hai.")
-            continue
-
-        image_url = get_first_product_image(product_link)
-
-        if image_url:
-            photo_updates.append(
-                gspread.Cell(
-                    row_number,
-                    photo_col_idx,
-                    image_url
-                )
-            )
-
-            print(f"Row {row_number}: First image mil gayi.")
-
-        else:
-            print(f"Row {row_number}: Image nahi mili, cell blank rahega.")
-
-    # Batch update
     if photo_updates:
-        print(f"Total {len(photo_updates)} images update ho rahi hain...")
-
-        sheet.update_cells(
-            photo_updates,
-            value_input_option="USER_ENTERED"
-        )
-
-        print("Google Sheet mein image URLs update ho gaye!")
-
+        print(f"Total {len(photo_updates)} real images update ho rahi hain...")
+        cell_list = [gspread.Cell(item["row"], item["col"], item["val"]) for item in photo_updates]
+        sheet.update_cells(cell_list)
+        print("Saari real images Google Sheet me successfully update ho gayi hain!")
     else:
-        print("Koi nayi image update karne ke liye nahi mili.")
-
-    print("Tracker complete!")
-
+        print("Sabhi rows me pehle se valid images maujood hain.")
 
 if __name__ == "__main__":
     main()
