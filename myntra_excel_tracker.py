@@ -44,27 +44,34 @@ def main():
 
     headers = [str(h).strip().upper() for h in all_rows[0]]
     
-    try:
-        photo_col_idx = headers.index("PHOTO") + 1
-    except ValueError:
+    # Pehla PHOTO column (Column C / index 3) target karna
+    photo_col_idx = -1
+    for idx, h in enumerate(headers):
+        if h == "PHOTO":
+            photo_col_idx = idx + 1
+            break
+            
+    if photo_col_idx == -1:
         print("PHOTO column nahi mila!")
         return
 
-    try:
-        link_col_idx = headers.index("STYLE ID LINK") + 1
-    except ValueError:
-        try:
-            link_col_idx = headers.index("STYLE ID") + 1
-        except ValueError:
-            print("Style ID ya Link column nahi mila!")
-            return
+    # STYLE ID LINK column dhundna
+    link_col_idx = -1
+    for idx, h in enumerate(headers):
+        if "LINK" in h or "STYLE ID" in h:
+            link_col_idx = idx + 1
+            break
+
+    if link_col_idx == -1:
+        print("Style ID Link column nahi mila!")
+        return
 
     print("Products check ho rahe hain aur missing photos update ki ja rahi hain...")
     
     for idx, row in enumerate(all_rows[1:], start=2):
         current_photo = row[photo_col_idx - 1].strip() if len(row) >= photo_col_idx else ""
         
-        if not current_photo or current_photo.lower() == "nan":
+        if not current_photo or current_photo.lower() == "nan" or current_photo == "":
             product_link = row[link_col_idx - 1].strip() if len(row) >= link_col_idx else ""
             
             if product_link and not product_link.startswith("http"):
