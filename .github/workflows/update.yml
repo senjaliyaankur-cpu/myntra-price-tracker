@@ -1,0 +1,32 @@
+name: Update Myntra data
+
+on:
+  schedule:
+    - cron: "30 4 * * *"        # roz subah 10:00 baje (India time)
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Sab products dobara fetch karo (true / false)"
+        default: "false"
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install gspread requests tzdata
+
+      - name: Update Google Sheet
+        env:
+          GCP_SECRETS_TOML: ${{ secrets.GCP_SECRETS_TOML }}
+          MYNTRA_PROXY: ${{ secrets.MYNTRA_PROXY }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          if [ "$FORCE" = "true" ]; then python myntra_excel_tracker.py --force; else python myntra_excel_tracker.py; fi
