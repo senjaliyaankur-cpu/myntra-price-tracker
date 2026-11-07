@@ -1,6 +1,5 @@
 """
 Shared code: Google Sheet connection + Myntra se data fetch + sheet update.
-app.py (Streamlit) aur myntra_excel_tracker.py (command line) dono isi ko use karte hain.
 """
 
 import datetime
@@ -9,41 +8,36 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
-
 import gspread
 import requests
 
 SHEET_NAME = "MYNTRA PRICE"
-TZ = ZoneInfo("Asia/Kolkata")   # Streamlit Cloud UTC par chalta hai, isliye India time alag se
-WORKERS = 8                      # ek saath kitne products fetch hon
+TZ = ZoneInfo("Asia/Kolkata")
+WORKERS = 4  # Reduced workers to avoid rate limiting
 DATE_RE = re.compile(r"^(\d{2}/\d{2}/\d{4})\s*(.*)$")
 
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+# Updated Mobile & Modern Headers to bypass Cloudflare
 HEADERS = {
-    "User-Agent": UA,
-    "Accept": "application/json,text/html,*/*",
-    "Accept-Language": "en-IN,en;q=0.9",
-    "x-meta-app": "channel=web",
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-IN,en-GB;q=0.9,en;q=0.8",
+    "Referer": "https://www.myntra.com/",
+    "X-Myntra-App": "android",
+    "X-Meta-App": "channel=mobile_web",
 }
 IMG_PREFIX = "https://assets.myntassets.com/h_720,q_90,w_540/v1/"
 
 
 def _proxies():
-    """Myntra cloud servers ko block kare to India proxy yahan se lagta hai.
-    GitHub secret / Streamlit secret / environment me MYNTRA_PROXY = http://user:pass@host:port"""
     p = (os.environ.get("MYNTRA_PROXY") or "").strip()
     return {"http": p, "https": p} if p else None
 
-
-# ======================= Google Sheet =======================
 
 def today_str():
     return datetime.datetime.now(TZ).strftime("%d/%m/%Y")
 
 
 def _local_secrets_toml():
-    """[gcp_service_account] ka data: GCP_SECRETS_TOML env var (GitHub Actions) ya 'secrets.toml' file se"""
     raw = os.environ.get("GCP_SECRETS_TOML")
     if raw and raw.strip():
         import tomllib
@@ -64,8 +58,6 @@ def _local_secrets_toml():
 
 
 def get_client(secret_info=None):
-    """Service account se gspread client banata hai.
-    Order: 1) secret_info (Streamlit secrets)  2) credentials.json  3) secrets.toml  4) GCP_SERVICE_ACCOUNT env var"""
     if secret_info:
         return gspread.service_account_from_dict(dict(secret_info))
     if os.path.exists("credentials.json"):
@@ -76,8 +68,7 @@ def get_client(secret_info=None):
     raw = os.environ.get("GCP_SERVICE_ACCOUNT")
     if raw:
         return gspread.service_account_from_dict(json.loads(raw))
-    raise RuntimeError("Google credentials nahi mile. GitHub secret 'GCP_SECRETS_TOML' me Streamlit Secrets ka "
-                       "text paste karo (ya credentials.json / secrets.toml rakho).")
+    raise RuntimeError("Google credentials nahi mile.")
 
 
 def open_sheet(secret_info=None):
@@ -85,7 +76,6 @@ def open_sheet(secret_info=None):
 
 
 def parse_header(h):
-    """'07/11/2026 STAR' -> ('07/11/2026', 'STAR'); date na ho to (None, 'HEADER')"""
     h = str(h).strip()
     m = DATE_RE.match(h)
     if not m:
@@ -101,7 +91,6 @@ def parse_header(h):
 
 
 def find_col(headers, name, exclude_link=False):
-    """Header ke naam se column dhundta hai (0 se ginti). Na mile to -1."""
     name = name.upper()
     for i, h in enumerate(headers):
         hu = str(h).strip().upper()
@@ -119,10 +108,8 @@ def style_id_from(text):
     return nums[-1] if nums else ""
 
 
-# ======================= Myntra se data =======================
-
 def extract_price(text):
-    for p in (r'"discountedPrice"\s*:\s*(\d+)', r'"discounted"\s*:\s*(\d+)', r'"mrp"\s*:\s*(\d+)'):
+    for p in (r'"discountedPrice"\s*:\s*(\d+)', r'"discounted"\s*:\s*(\d+)', r'"mrp"\s*:\s*(\d+)', r'"mrp"\s*:\s*"(\d+)"'):
         m = re.search(p, text)
         if m:
             return m.group(1)
@@ -142,8 +129,6 @@ def extract_rating(text):
 
 
 def normalize_image_url(url):
-    """Myntra ki kisi bhi image link ko ek saaf 540x720 URL me badalta hai:
-    https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/....jpg"""
     if not url:
         return ""
     url = url.replace("\\u002F", "/").replace("\\/", "/")
@@ -158,13 +143,11 @@ def normalize_image_url(url):
 def extract_image(text):
     m = (re.search(r'"imageURL"\s*:\s*"([^"]+)"', text)
          or re.search(r'"searchImage"\s*:\s*"([^"]+)"', text)
-         or re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', text)
-         or re.search(r'"src"\s*:\s*"(https?:[^"]*assets/images/[^"]+?\.(?:jpg|jpeg|png|webp))"', text))
+         or re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', text))
     return normalize_image_url(m.group(1)) if m else ""
 
 
 def default_image_url(style_id):
-    """Aakhri upay: standard Myntra URL (sab products par chalna zaroori nahi)"""
     return f"{IMG_PREFIX}assets/images/{style_id}/default/image.jpg"
 
 
@@ -203,8 +186,6 @@ def _size_in_stock(s):
 
 
 def extract_stock_sellers(text):
-    """(out_of_stock_text, sellers_text).  OUT OF STOCK = jo sizes stock out hain:
-    'NONE' (koi nahi), 'S, M' (kuch), 'ALL: S, M, L' (sab)"""
     obj = _load_json(text)
     if obj is None:
         return None
@@ -238,43 +219,45 @@ def extract_stock_sellers(text):
 
 
 def fetch_style(style_id):
-    """Ek product ka saara data. Hamesha dict deta hai:
-    price, star, reviews, oos, sellers, image, status ('OK' / 'Error 403' / 'Price Not Found' ...)"""
     out = {"price": "", "star": "N/A", "reviews": "N/A", "oos": "N/A", "sellers": "N/A",
            "image": "", "status": "Error Fetching"}
     got_price = False
-    for attempt in range(2):
-        for url in (f"https://www.myntra.com/gateway/v2/product/{style_id}",
-                    f"https://www.myntra.com/{style_id}"):
-            try:
-                r = requests.get(url, headers=HEADERS, timeout=20, proxies=_proxies())
-            except requests.RequestException:
-                out["status"] = "Error Fetching"
-                continue
-            if r.status_code != 200:
-                out["status"] = f"Error {r.status_code}"
-                continue
-            if not got_price:
-                p = extract_price(r.text)
-                if p:
-                    out["price"], got_price = p, True
-                else:
-                    out["status"] = "Price Not Found"
-            if out["star"] == "N/A":
-                rt = extract_rating(r.text)
-                if rt:
-                    out["star"], out["reviews"] = rt
-            if out["oos"] == "N/A":
-                st = extract_stock_sellers(r.text)
-                if st:
-                    out["oos"], out["sellers"] = st[0], (st[1] or "N/A")
-            if not out["image"]:
-                out["image"] = extract_image(r.text)
-            if got_price and out["star"] != "N/A" and out["oos"] != "N/A" and out["image"]:
-                out["status"] = "OK"
-                return out
-        if got_price:
-            break
+    
+    # Session with standard headers
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    
+    urls = [
+        f"https://www.myntra.com/gateway/v2/product/{style_id}",
+        f"https://www.myntra.com/v1/styles/{style_id}",
+        f"https://www.myntra.com/{style_id}"
+    ]
+    
+    for url in urls:
+        try:
+            r = session.get(url, timeout=12, proxies=_proxies())
+            if r.status_code == 200:
+                text = r.text
+                if not got_price:
+                    p = extract_price(text)
+                    if p:
+                        out["price"], got_price = p, True
+                if out["star"] == "N/A":
+                    rt = extract_rating(text)
+                    if rt:
+                        out["star"], out["reviews"] = rt
+                if out["oos"] == "N/A":
+                    st = extract_stock_sellers(text)
+                    if st:
+                        out["oos"], out["sellers"] = st[0], (st[1] or "N/A")
+                if not out["image"]:
+                    out["image"] = extract_image(text)
+                if got_price:
+                    out["status"] = "OK"
+                    return out
+        except Exception:
+            continue
+
     if got_price:
         out["status"] = "OK"
     return out
@@ -291,14 +274,10 @@ def fetch_many(style_ids, progress=None):
     return results
 
 
-# ======================= Sheet update =======================
-
 BLOCK_METRICS = ["PRICE", "STAR", "REVIEWS", "OUT OF STOCK", "SELLERS"]
 
 
 def ensure_today_block(sheet, headers, date=None):
-    """Aaj ki date ke 5 columns (price, star, reviews, out of stock, sellers) agar nahi hain to sheet ke end me
-    bana deta hai. Returns (headers, {metric: col_index})"""
     date = date or today_str()
     cols = {}
     for i, h in enumerate(headers):
@@ -325,7 +304,6 @@ def ensure_today_block(sheet, headers, date=None):
 
 
 def write_cells(sheet, cells):
-    """Alag-alag jagah ke cells ek hi request me likhta hai (USER_ENTERED = number number ban jaye)"""
     if not cells:
         return
     data = [{"range": gspread.utils.rowcol_to_a1(c.row, c.col), "values": [[c.value]]} for c in cells]
@@ -341,7 +319,6 @@ def _num(v):
 
 
 def _cells_for(row_no, cols, res):
-    """Ek row ke aaj ke 5 cells"""
     price = _num(res["price"])
     star = float(res["star"]) if re.match(r"^[0-9.]+$", str(res["star"])) else res["star"]
     reviews = _num(res["reviews"])
@@ -351,9 +328,6 @@ def _cells_for(row_no, cols, res):
 
 
 def update_today(sheet, progress=None, force=False):
-    """Sheet ke saare products ka aaj ka data bharta hai (aur khali / default photo ka sahi URL).
-    force=False: jin rows me aaj ka price pehle se hai unhe dobara fetch nahi karta.
-    Returns summary dict."""
     values = sheet.get_all_values()
     if len(values) < 2:
         return {"products": 0, "fetched": 0, "errors": 0, "photos": 0, "date": today_str(), "error_ids": []}
@@ -398,7 +372,7 @@ def update_today(sheet, progress=None, force=False):
         if needs_data(r):
             if res["price"]:
                 cells.extend(_cells_for(r, cols, res))
-            else:   # data nahi mila: cell khali chhodo taaki agli baar dobara try ho
+            else:
                 errors += 1
                 error_ids.append(f"{sid} ({res['status']})")
         if needs_photo(r):
@@ -410,18 +384,11 @@ def update_today(sheet, progress=None, force=False):
                 cells.append(gspread.Cell(r, photo_col + 1, default_image_url(sid)))
     if cells:
         write_cells(sheet, cells)
-        try:   # price column ko ₹ format do (agar nahi ho paya to koi dikkat nahi)
-            sheet.format(f"{gspread.utils.rowcol_to_a1(2, price_col + 1)}:"
-                         f"{gspread.utils.rowcol_to_a1(len(rows) + 1, price_col + 1)}",
-                         {"numberFormat": {"type": "CURRENCY", "pattern": "\"₹\"#,##0"}})
-        except Exception:
-            pass
     return {"products": len(row_sid), "fetched": len(todo), "errors": errors,
             "photos": photos, "date": today_str(), "error_ids": error_ids[:10]}
 
 
 def add_style(sheet, text):
-    """Naya style ID (ya link) sheet ke end me jodta hai. Returns (ok, message)"""
     sid = style_id_from(text)
     if not sid:
         return False, "Valid Style ID ya Myntra link daalo."
