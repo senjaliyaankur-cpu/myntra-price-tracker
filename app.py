@@ -6,6 +6,7 @@ import sys
 import subprocess
 import re
 import json
+import requests
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -20,6 +21,66 @@ if not os.path.exists("credentials.json") and "gcp_service_account" in st.secret
             json.dump(creds_dict, f)
     except Exception as e:
         st.error(f"Credentials file banane me error: {e}")
+
+def fetch_live_style_data(style_id):
+    """Myntra API se live price, ratings, reviews aur image fetch karta hai."""
+    data_out = {"price": "", "star": "", "reviews": "", "image": "", "oos": "NONE", "seller": ""}
+    try:
+        api_url = f"https://www.myntra.com/gateway/v2/product/{style_id}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*"
+        }
+        res = requests.get(api_url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            j = res.json()
+            # Price
+            price_info = j.get("price", {})
+            mrp = price_info.get("mrp", 0)
+            discounted = price_info.get("discounted", 0)
+            final_price = discounted if discounted > 0 else mrp
+            if final_price > 0:
+                data_out["price"] = f"₹{final_price}"
+            
+            # Rating & Reviews
+            rating_info = j.get("rating", {})
+            ratings_val = rating_info.get("averageRating", 0)
+            review_count = rating_info.get("totalCount", 0)
+            if ratings_val:
+                data_out["star"] = str(ratings_val)
+            if review_count:
+                data_out["reviews"] = str(review_count)
+                
+            # Image
+            search_image = j.get("searchImage")
+            if search_image:
+                data_out["image"] = search_image
+            else:
+                views = j.get("views", {})
+                if "default" in views:
+                    img_info = views["default"].get("image1")
+                    if img_info and "secureUrl" in img_info:
+                        data_out["image"] = img_info["secureUrl"]
+                        
+            if not data_out["image"]:
+                data_out["image"] = f"https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/{style_id}/default/image.jpg"
+                
+            # Sizes / Stock
+            sizes = j.get("sizes", [])
+            if sizes:
+                avail_sizes = [s.get("label") for s in sizes if s.get("available")]
+                all_sizes = [s.get("label") for s in sizes]
+                if not avail_sizes:
+                    data_out["oos"] = f"ALL: {', '.join(all_sizes)}"
+                else:
+                    data_out["oos"] = f"{', '.join(avail_sizes)}"
+        else:
+            data_out["image"] = f"https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/{style_id}/default/image.jpg"
+    except Exception as e:
+        print(f"Error fetching live data: {e}")
+        data_out["image"] = f"https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/{style_id}/default/image.jpg"
+        
+    return data_out
 
 @st.cache_data(ttl=60)
 def load_data():
@@ -40,7 +101,6 @@ def load_data():
 
         df = pd.DataFrame(rows[1:], columns=rows[0])
         
-        # Duplicate columns handle karna
         new_cols = []
         seen = {}
         for c in df.columns:
@@ -91,7 +151,7 @@ if st.sidebar.button("🔄 Refresh & Clear Cache"):
 
 st.sidebar.markdown("---")
 
-# Add New Style ID Section in Sidebar
+# Add New Style ID Section in Sidebar with Live Data Fetching
 st.sidebar.subheader("➕ Add New Style ID")
 new_style_input = st.sidebar.text_input("Enter Style ID or Link")
 if st.sidebar.button("Add to Google Sheet"):
@@ -99,40 +159,71 @@ if st.sidebar.button("Add to Google Sheet"):
         numbers = re.findall(r'\d+', new_style_input)
         if numbers:
             style_id = numbers[-1]
-            with st.spinner(f"Adding Style ID {style_id} to Google Sheet..."):
+            with st.spinner(f"Fetching live data & adding Style ID {style_id}..."):
                 try:
                     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
                     creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope) if os.path.exists("credentials.json") else ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
                     client = gspread.authorize(creds)
                     sheet = client.open(SHEET_NAME).sheet1
                     
-                    # Check if style already exists
                     all_vals = sheet.get_all_values()
                     headers = all_vals[0] if all_vals else []
                     
                     style_col_idx = -1
                     link_col_idx = -1
+                    photo_col_idx = -1
+                    
                     for idx, h in enumerate(headers):
                         h_up = str(h).upper()
                         if "STYLE ID" in h_up and "LINK" not in h_up:
-                            style_col_idx = idx
+                            style_col_idx = idx + 1
                         elif "LINK" in h_up:
-                            link_col_idx = idx
+                            link_col_idx = idx + 1
+                        elif h_up == "PHOTO" or h_up.startswith("PHOTO_"):
+                            photo_col_idx = idx + 1
                             
-                    existing_styles = [str(row[style_col_idx]) for row in all_vals[1:]] if style_col_idx != -1 and len(all_vals) > 1 else []
+                    existing_styles = [str(row[style_col_idx - 1]) for row in all_vals[1:]] if style_col_idx != -1 and len(all_vals) > 1 else []
                     
                     if style_id in existing_styles:
                         st.sidebar.warning(f"Style ID {style_id} pehle se sheet me maujood hai!")
                     else:
-                        # Nayi row create karna
-                        new_row = [""] * len(headers)
-                        if style_col_idx != -1:
-                            new_row[style_col_idx] = str(style_id)
-                        if link_col_idx != -1:
-                            new_row[link_col_idx] = f"https://www.myntra.com/{style_id}"
+                        # Live data fetch karna
+                        live_data = fetch_live_style_data(style_id)
+                        
+                        # Nayi row create karna headers ke mutabiq
+                        new_row_dict = {}
+                        for idx, h in enumerate(headers):
+                            h_str = str(h).strip()
+                            h_up = h_str.upper()
                             
-                        sheet.append_row(new_row)
-                        st.sidebar.success(f"Style ID {style_id} successfully add ho gaya!")
+                            if "STYLE ID" in h_up and "LINK" not in h_up:
+                                new_row_dict[idx] = str(style_id)
+                            elif "LINK" in h_up:
+                                new_row_dict[idx] = f"https://www.myntra.com/{style_id}"
+                            elif h_up == "PHOTO" or h_up.startswith("PHOTO_"):
+                                new_row_dict[idx] = live_data["image"]
+                            else:
+                                # Aaj ki date ka column check karna (e.g. 07/11/2026)
+                                today_str = datetime.datetime.now().strftime("%d/%m/%Y")
+                                if today_str in h_str:
+                                    if "STAR" in h_up:
+                                        new_row_dict[idx] = live_data["star"]
+                                    elif "REVIEW" in h_up:
+                                        new_row_dict[idx] = live_data["reviews"]
+                                    elif "OUT OF STOCK" in h_up:
+                                        new_row_dict[idx] = live_data["oos"]
+                                    elif "SELLER" in h_up:
+                                        new_row_dict[idx] = live_data["seller"]
+                                    else:
+                                        new_row_dict[idx] = live_data["price"]
+                                else:
+                                    new_row_dict[idx] = ""
+                                    
+                        # List me convert karke append karna
+                        final_row = [new_row_dict.get(i, "") for i in range(len(headers))]
+                        sheet.append_row(final_row)
+                        
+                        st.sidebar.success(f"Style ID {style_id} live data ke sath successfully add ho gaya!")
                         st.cache_data.clear()
                         st.rerun()
                 except Exception as e:
@@ -175,7 +266,6 @@ if view_mode == "📊 Clean Price & Stock Table":
         mask = filtered_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)
         filtered_df = filtered_df[mask]
         
-    # Multiple date & metric filtering logic
     if selected_dates:
         base_cols = [c for c in df.columns if not re.search(r"\d{2}/\d{2}/\d{4}", str(c))]
         
@@ -213,7 +303,6 @@ if view_mode == "📊 Clean Price & Stock Table":
 
     st.metric("Total Products Displayed", len(filtered_df))
     
-    # MultiIndex Columns Setup (Upar Date, Niche Field Names)
     multi_tuples = []
     for col in filtered_df.columns:
         col_str = str(col).strip()
