@@ -36,12 +36,23 @@ def load_data():
             return None
 
         df = pd.DataFrame(rows[1:], columns=rows[0])
-        df.columns = [str(c).strip() for c in df.columns]
+        
+        # Duplicate columns ko handle karne ke liye clean names dena
+        new_cols = []
+        seen = {}
+        for c in df.columns:
+            c_str = str(c).strip()
+            if c_str in seen:
+                seen[c_str] += 1
+                new_cols.append(f"{c_str}_{seen[c_str]}")
+            else:
+                seen[c_str] = 0
+                new_cols.append(c_str)
+        df.columns = new_cols
         
         if df.empty:
             return None
 
-        df = df.loc[:, ~df.columns.duplicated()]
         return df
     except Exception as e:
         st.error(f"Google Sheet load karne me error aaya: {e}")
@@ -117,10 +128,10 @@ if view_mode == "📊 Clean Price & Stock Table":
     st.metric("Total Products Displayed", len(filtered_df))
     
     column_config = {}
-    if "PHOTO" in filtered_df.columns:
-        column_config["PHOTO"] = st.column_config.ImageColumn(
-            "Product Photo", help="Myntra Product Image", width="small"
-        )
+    # Pehla ya dusra PHOTO column detect karke image column banana
+    for col in filtered_df.columns:
+        if "PHOTO" in col.upper():
+            column_config[col] = st.column_config.ImageColumn("Product Photo", width="small")
     
     st.dataframe(
         filtered_df, 
@@ -150,8 +161,9 @@ elif view_mode == "⭐ Top Rated Products":
             top_df = top_df.sort_values(by=[star_col, rev_col], ascending=[False, False]).head(top_n)
             
             column_config = {}
-            if "PHOTO" in top_df.columns:
-                column_config["PHOTO"] = st.column_config.ImageColumn("Product Photo", width="small")
+            for col in top_df.columns:
+                if "PHOTO" in col.upper():
+                    column_config[col] = st.column_config.ImageColumn("Product Photo", width="small")
             
             st.dataframe(top_df, column_config=column_config, use_container_width=True, height=500)
 
@@ -163,9 +175,15 @@ elif view_mode == "📈 Product Trend Analysis":
     if selected_style:
         prod_row = df[df['STYLE ID'].astype(str) == str(selected_style)]
         if not prod_row.empty:
-            photo_url = prod_row['PHOTO'].values[0] if 'PHOTO' in prod_row.columns else ""
-            if photo_url and str(photo_url).startswith("http"):
-                st.image(str(photo_url), width=120)
+            photo_url = ""
+            for col in prod_row.columns:
+                if "PHOTO" in col.upper():
+                    val = str(prod_row[col].values[0]).strip()
+                    if val.startswith("http"):
+                        photo_url = val
+                        break
+            if photo_url:
+                st.image(photo_url, width=120)
             
             history_data = []
             for d in dates:
@@ -175,7 +193,7 @@ elif view_mode == "📈 Product Trend Analysis":
                 
                 price_val = prod_row[p_col].values[0] if p_col in prod_row.columns else None
                 star_val = prod_row[s_col].values[0] if s_col in prod_row.columns else None
-                rev_val = prod_row[r_col].values[0] if r_col in prod_row.columns else None
+                rev_val = prod_row[r_col].values[0] if prod_row.columns else None
                 
                 p_num = float(re.sub(r'[^0-9.]', '', str(price_val))) if pd.notna(price_val) and re.sub(r'[^0-9.]', '', str(price_val)) else None
                 
