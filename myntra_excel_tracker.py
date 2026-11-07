@@ -11,7 +11,6 @@ def get_google_sheet_client():
     if os.path.exists("credentials.json"):
         creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
     else:
-        # Streamlit secrets fallback agar local run na ho raha ho
         import streamlit as st
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
@@ -26,7 +25,6 @@ def fetch_myntra_image(product_url):
         response = requests.get(product_url, headers=headers, timeout=10)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
-            # Myntra meta tag se direct image uthana sabse reliable hai
             meta_img = soup.find("meta", property="og:image")
             if meta_img and meta_img.get("content"):
                 return meta_img["content"]
@@ -42,7 +40,6 @@ def main():
     records = sheet.get_all_records()
     headers = sheet.row_values(1)
     
-    # Columns ke index pata karna (1-based index for gspread)
     try:
         photo_col_idx = headers.index("PHOTO") + 1
     except ValueError:
@@ -60,16 +57,15 @@ def main():
 
     print("Products check ho rahe hain aur missing photos update ki ja rahi hain...")
     
-    for idx, row in enumerate(records, start=2): # Row 2 se start kyunki row 1 header hai
+    for idx, row in enumerate(records, start=2):
         current_photo = str(row.get("PHOTO", "")).strip()
         
-        # Agar photo pehle se nahi hai, tabhi fetch karo
         if not current_photo or current_photo.lower() == "nan" or current_photo == "":
             product_link = str(row.get("STYLE ID LINK", "")).strip()
             if not product_link:
                 style_id = str(row.get("STYLE ID", "")).strip()
                 if style_id:
-                    product_link = f"https://www.mynrta.com/{style_id}" # fallback link structure
+                    product_link = f"https://www.myntra.com/{style_id}"
             
             if product_link and product_link.startswith("http"):
                 print(f"Fetching photo for row {idx} -> {product_link}")
