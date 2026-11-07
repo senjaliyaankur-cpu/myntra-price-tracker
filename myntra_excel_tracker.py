@@ -1,6 +1,7 @@
 import os
 import requests
 import re
+from bs4 import BeautifulSoup
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -17,28 +18,35 @@ def get_google_sheet_client():
     return gspread.authorize(creds)
 
 def get_image_for_style(style_id):
-    # 1. Myntra Gateway API try karna
+    # Myntra product page ya search se image extract karne ki koshish
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.myntra.com/"
+    }
+    
+    # 1. Pehle direct product page try karo BeautifulSoup ke sath
     try:
-        api_url = f"https://www.myntra.com/gateway/v2/product/{style_id}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*"
-        }
-        res = requests.get(api_url, headers=headers, timeout=8)
+        url = f"https://www.myntra.com/{style_id}"
+        res = requests.get(url, headers=headers, timeout=10)
         if res.status_code == 200:
-            data = res.json()
-            search_image = data.get("searchImage")
-            if search_image:
-                return search_image
-            views = data.get("views", {})
-            if "default" in views:
-                img_info = views["default"].get("image1")
-                if img_info and "secureUrl" in img_info:
-                    return img_info["secureUrl"]
+            soup = BeautifulSoup(res.text, 'html.parser')
+            # Myntra image meta tag dhoondna
+            meta_img = soup.find("meta", property="og:image")
+            if meta_img and meta_img.get("content"):
+                return meta_img["content"]
+            
+            # Agar meta na mile toh script tag me dhoondna
+            img_match = re.search(r'https://assets\.myntassets\.com/[^\s"\'<>]+?\.(?:jpg|jpeg|png)', res.text)
+            if img_match:
+                found_url = img_match.group(0)
+                if "assets/images/" in found_url:
+                    return found_url
     except Exception:
         pass
-    
-    # 2. Fallback: Direct CDN pattern agar API block ho jaye
+
+    # 2. Agar page block ho jaye toh Myntra search API ya standard CDN link fallback
     return f"https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/{style_id}/default/image.jpg"
 
 def main():
