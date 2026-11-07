@@ -91,6 +91,11 @@ if st.sidebar.button("🔄 Refresh & Clear Cache"):
 
 st.sidebar.markdown("---")
 
+# Metrics multiselect filter in sidebar
+st.sidebar.subheader("🎯 Metric Filters")
+all_metrics = ["SELLING PRICE", "STAR", "REVIEWS", "OUT OF STOCK", "SELLERS"]
+selected_metrics = st.sidebar.multiselect("Select Metrics to Show", options=all_metrics, default=all_metrics)
+
 cols = list(df.columns)
 dates = []
 
@@ -123,7 +128,7 @@ if view_mode == "📊 Clean Price & Stock Table":
         mask = filtered_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)
         filtered_df = filtered_df[mask]
         
-    # Multiple date filtering logic
+    # Multiple date & metric filtering logic
     if selected_dates:
         base_cols = [c for c in df.columns if not re.search(r"\d{2}/\d{2}/\d{4}", str(c))]
         
@@ -131,7 +136,21 @@ if view_mode == "📊 Clean Price & Stock Table":
         for d in selected_dates:
             for col in df.columns:
                 if d in str(col):
-                    if col not in keep_cols:
+                    col_upper = str(col).upper()
+                    # Check if metric matches user selection
+                    is_matched = False
+                    if "STAR" in col_upper and "STAR" in selected_metrics:
+                        is_matched = True
+                    elif ("REVIEW" in col_upper) and "REVIEWS" in selected_metrics:
+                        is_matched = True
+                    elif "OUT OF STOCK" in col_upper and "OUT OF STOCK" in selected_metrics:
+                        is_matched = True
+                    elif ("SELLER" in col_upper) and "SELLERS" in selected_metrics:
+                        is_matched = True
+                    elif not any(x in col_upper for x in ["STAR", "REVIEW", "OUT OF STOCK", "SELLER"]) and "SELLING PRICE" in selected_metrics:
+                        is_matched = True
+                        
+                    if is_matched and col not in keep_cols:
                         keep_cols.append(col)
         
         existing_keep_cols = [c for c in keep_cols if c in filtered_df.columns]
@@ -157,7 +176,6 @@ if view_mode == "📊 Clean Price & Stock Table":
         m = re.search(r"(\d{2}/\d{2}/\d{4})", col_str)
         if m:
             date_part = m.group(1)
-            # Field name alag karna
             sub_name = col_str.replace(date_part, "").strip(" -_")
             if not sub_name:
                 sub_name = "SELLING PRICE"
@@ -167,7 +185,6 @@ if view_mode == "📊 Clean Price & Stock Table":
             
     filtered_df.columns = pd.MultiIndex.from_tuples(multi_tuples)
 
-    # Custom styling to render MultiIndex cleanly without arrow crash
     st.dataframe(filtered_df, use_container_width=True, height=600)
 
 elif view_mode == "⭐ Top Rated Products":
