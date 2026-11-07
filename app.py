@@ -38,10 +38,8 @@ def load_data():
         if not rows or len(rows) < 2:
             return None
 
-        # Google sheet ki row 0 ko header banana
         df = pd.DataFrame(rows[1:], columns=rows[0])
         
-        # Duplicate columns handle karna
         new_cols = []
         seen = {}
         for c in df.columns:
@@ -97,9 +95,10 @@ date_re = re.compile(r"^(\d{2})/(\d{2})/(\d{4})$")
 dates = []
 
 for c in cols:
-    m = date_re.match(str(c).strip())
+    # Date ko column name me detect karna (e.g. "07/11/2026")
+    m = re.search(r"(\d{2}/\d{2}/\d{4})", str(c))
     if m:
-        d_str = m.group(0)
+        d_str = m.group(1)
         if d_str not in dates:
             dates.append(d_str)
 
@@ -115,8 +114,7 @@ if view_mode == "📊 Clean Price & Stock Table":
     with col1:
         search_query = st.text_input("🔍 Search (Style ID, Seller, Size, etc.)", "")
     with col2:
-        # Multiple date selection support
-        selected_dates = st.multiselect("📅 Filter by Date Columns", options=dates, default=[])
+        selected_dates = st.multiselect("📅 Filter by Date Columns", options=dates, default=dates[-1:] if dates else [])
     with col3:
         stock_filter = st.selectbox("📦 Stock Status Filter", ["All", "In Stock (NONE)", "Out of Stock (ALL)"])
         
@@ -128,25 +126,22 @@ if view_mode == "📊 Clean Price & Stock Table":
         
     # Multiple date filtering logic
     if selected_dates:
-        # Base columns jo hamesha dikhenge
-        base_cols = [c for c in df.columns if not date_re.match(str(c).strip()) and "STAR" not in str(c) and "REVIEWS" not in str(c) and "OUT OF STOCK" not in str(c) and "SELLER" not in str(c)]
+        base_cols = [c for c in df.columns if not re.search(r"\d{2}/\d{2}/\d{4}", str(c))]
         
-        # Selected dates se jude hue saare sub-columns (Price, Star, Reviews, Out of Stock, Seller, etc.)
         keep_cols = list(base_cols)
         for d in selected_dates:
             for col in df.columns:
-                if col.startswith(d) or col == d:
+                if d in str(col):
                     if col not in keep_cols:
                         keep_cols.append(col)
         
-        # DataFrame ko sirf selected columns tak limit karna
         existing_keep_cols = [c for c in keep_cols if c in filtered_df.columns]
         filtered_df = filtered_df[existing_keep_cols]
 
     if selected_dates and len(selected_dates) > 0 and stock_filter != "All":
         for selected_date in selected_dates:
-            oos_col = f"{selected_date} OUT OF STOCK"
-            if oos_col in filtered_df.columns:
+            oos_cols = [c for c in filtered_df.columns if selected_date in str(c) and "OUT OF STOCK" in str(c).upper()]
+            for oos_col in oos_cols:
                 if stock_filter == "In Stock (NONE)":
                     filtered_df = filtered_df[filtered_df[oos_col] == "NONE"]
                 elif stock_filter == "Out of Stock (ALL)":
@@ -170,10 +165,12 @@ elif view_mode == "⭐ Top Rated Products":
         min_rev = st.number_input("Minimum Reviews", min_value=0, value=10)
         
     if latest_date:
-        star_col = f"{latest_date} STAR"
-        rev_col = f"{latest_date} REVIEWS"
+        star_cols = [c for c in df.columns if latest_date in str(c) and "STAR" in str(c).upper()]
+        rev_cols = [c for c in df.columns if latest_date in str(c) and "REVIEWS" in str(c).upper()]
         
-        if star_col in df.columns and rev_col in df.columns:
+        if star_cols and rev_cols:
+            star_col = star_cols[0]
+            rev_col = rev_cols[0]
             top_df = df.copy()
             top_df[star_col] = pd.to_numeric(top_df[star_col], errors='coerce').fillna(0)
             top_df[rev_col] = pd.to_numeric(top_df[rev_col], errors='coerce').fillna(0)
@@ -208,13 +205,13 @@ elif view_mode == "📈 Product Trend Analysis":
             
             history_data = []
             for d in dates:
-                p_col = d
-                s_col = f"{d} STAR"
-                r_col = f"{d} REVIEWS"
+                p_cols = [c for c in prod_row.columns if d == str(c).strip()]
+                s_cols = [c for c in prod_row.columns if d in str(c) and "STAR" in str(c).upper()]
+                r_cols = [c for c in prod_row.columns if d in str(c) and "REVIEWS" in str(c).upper()]
                 
-                price_val = prod_row[p_col].values[0] if p_col in prod_row.columns else None
-                star_val = prod_row[s_col].values[0] if s_col in prod_row.columns else None
-                rev_val = prod_row[r_col].values[0] if r_col in prod_row.columns else None
+                price_val = prod_row[p_cols[0]].values[0] if p_cols else None
+                star_val = prod_row[s_cols[0]].values[0] if s_cols else None
+                rev_val = prod_row[r_cols[0]].values[0] if r_cols else None
                 
                 p_num = float(re.sub(r'[^0-9.]', '', str(price_val))) if pd.notna(price_val) and re.sub(r'[^0-9.]', '', str(price_val)) else None
                 
