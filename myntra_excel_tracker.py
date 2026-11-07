@@ -18,36 +18,41 @@ def get_google_sheet_client():
     return gspread.authorize(creds)
 
 def fetch_real_myntra_image(product_url):
-    """Myntra page source se window.__myx JSON parse karke exact real image URL extract karta hai."""
+    """Myntra product page se pehli real high-resolution image ka URL nikalta hai."""
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
         }
-        res = requests.get(product_url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            # 1. Approach: window.__myx JSON state search karna
-            match = re.search(r'window\.__myx\s*=\s*(\{.*?\});?</script>', res.text)
-            if match:
-                data = json.loads(match.group(1))
-                media_assets = data.get("pdpData", {}).get("media", {}).get("albums", [])
-                if media_assets:
-                    for album in media_assets:
-                        images = album.get("images", [])
-                        if images and "src" in images[0]:
-                            return images[0]["src"]
+        response = requests.get(product_url, headers=headers, timeout=12)
+        if response.status_code == 200:
+            html_content = response.text
             
-            # 2. Fallback: Direct assets.myntassets.com pattern regex search
-            img_matches = re.findall(r'https://assets\.myntassets\.com/[^\s"\'<>]+?\.(?:jpg|jpeg|png)', res.text)
-            if img_matches:
-                # Valid high-res product photo choose karna
-                for img_url in img_matches:
-                    if "/assets/images/" in img_url and "default" not in img_url:
-                        return img_url
-                        
+            # 1. Myntra ke embedded JSON (window.__myx) se image URL dhoondna
+            match = re.search(r'window\.__myx\s*=\s*(\{.*?\});?</script>', html_content, re.DOTALL)
+            if match:
+                try:
+                    data = json.loads(match.group(1))
+                    media_albums = data.get("pdpData", {}).get("media", {}).get("albums", [])
+                    for album in media_albums:
+                        for img in album.get("images", []):
+                            src = img.get("src")
+                            if src:
+                                # Standard high-res format ensure karna
+                                if "assets.myntassets.com" in src:
+                                    return src
+                except Exception:
+                    pass
+            
+            # 2. Fallback: Page ke andar se assets.myntassets.com wale image links regex se uthana
+            img_matches = re.findall(r'https://assets\.myntassets\.com/[^\s"\'<>]+?\.(?:jpg|jpeg|png)', html_content)
+            for img_url in img_matches:
+                if "/assets/images/" in img_url and "default" not in img_url and "search" not in img_url:
+                    return img_url
+                    
     except Exception as e:
-        print(f"Error scraping image for {product_url}: {e}")
+        print(f"Error fetching image for {product_url}: {e}")
     return ""
 
 def main():
@@ -62,7 +67,7 @@ def main():
 
     headers = [str(h).strip().upper() for h in all_rows[0]]
     
-    # Pehla PHOTO column index (1-based)
+    # PHOTO column index (1-based)
     photo_col_idx = -1
     for idx, h in enumerate(headers):
         if h == "PHOTO":
@@ -73,7 +78,7 @@ def main():
         print("PHOTO column nahi mila!")
         return
 
-    # STYLE ID LINK ya STYLE ID column
+    # STYLE ID LINK column index
     link_col_idx = -1
     for idx, h in enumerate(headers):
         if "LINK" in h or "STYLE ID" in h:
@@ -84,35 +89,31 @@ def main():
         print("Style ID Link column nahi mila!")
         return
 
-    print("Products check ho rahe hain aur Real Image URLs fetch kiye ja rahe hain...")
+    print("Products check ho rahe hain aur Myntra se real images fetch ki ja rahi hain...")
     
     photo_updates = []
     
     for idx, row in enumerate(all_rows[1:], start=2):
         current_photo = row[photo_col_idx - 1].strip() if len(row) >= photo_col_idx else ""
         
-        # Sirf khali/invalid cells ko update karega (jo aapne pehle se add kiye hain unko waisa hi rakhega)
-        if not current_photo or current_photo.lower() == "nan" or "default/image.jpg" in current_photo:
+        # Agar photo cell khali hai, tabhi Myntra se fetch karega
+        if not current_photo or current_photo.lower() == "nan" or current_photo == "":
             product_link = row[link_col_idx - 1].strip() if len(row) >= link_col_idx else ""
             
             if product_link and not product_link.startswith("http"):
                 product_link = f"https://www.myntra.com/{product_link}"
             
             if product_link and product_link.startswith("http"):
-                print(f"Row {idx}: Scraping real image URL -> {product_link}")
-                real_img_url = fetch_real_myntra_image(product_link)
-                
-                if real_img_url:
-                    photo_updates.append({"row": idx, "col": photo_col_idx, "val": real_img_url})
-                    print(f"Found: {real_img_url}")
+                print(f"Row {idx}: Fetching image for {product_link}")
+                real_img = fetch_real_myntra_image(product_link)
+                if real_img:
+                    photo_updates.append({"row": idx, "col": photo_col_idx, "val": real_img})
+                    print(f"-> Found: {real_img}")
 
     if photo_updates:
-        print(f"Total {len(photo_updates)} real photo URLs mil gaye hain. Batch update starting...")
+        print(f"Total {len(photo_updates)} images mil gayi hain. Google Sheet me batch update ho raha hai...")
         cell_list = [gspread.Cell(item["row"], item["col"], item["val"]) for item in photo_updates]
         sheet.update_cells(cell_list)
-        print("Google Sheet me saari real photos update ho gayi hain!")
+        print("Saari images successfully update ho gayi hain!")
     else:
-        print("Koi naye image links update karne ki zaroorat nahi thi.")
-
-if __name__ == "__main__":
-    main()
+        print("Koi nayi image update karne ki zaroorat nahi padi
