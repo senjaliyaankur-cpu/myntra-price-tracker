@@ -7,8 +7,12 @@ Roz ka update (command line se):
 Google Sheet ("MYNTRA PRICE") me aaj ki date ke 5 columns (price, star, reviews, out of stock, sellers)
 apne aap bana kar bharta hai, aur khali / galat photo ka sahi Myntra image URL bhi daalta hai.
 
-Credentials: is folder me credentials.json rakho (ya GCP_SERVICE_ACCOUNT environment variable).
-Myntra kabhi kabhi cloud servers ko block karta hai, isliye ye script apne computer par chalana sabse pakka hai.
+Ye GitHub Actions (.github/workflows/update.yml) se roz apne aap chalta hai. Manual chalane ke liye:
+GitHub repo > Actions > "Update Myntra data" > Run workflow.
+
+GitHub secrets (Settings > Secrets and variables > Actions):
+  GCP_SECRETS_TOML : Streamlit app ke Secrets ka poora text (jisme [gcp_service_account] hai)
+  MYNTRA_PROXY     : (optional) India proxy, agar Myntra GitHub ko block kare:  http://user:pass@host:port
 """
 
 import sys
@@ -19,7 +23,11 @@ from myntra_core import open_sheet, update_today
 def main():
     force = "--force" in sys.argv
     print("Google Sheet se connection ban raha hai...")
-    sheet = open_sheet()
+    try:
+        sheet = open_sheet()
+    except Exception as e:
+        print(f"Google Sheet khul nahi payi: {e}")
+        sys.exit(1)
 
     def progress(done, total):
         if done % 10 == 0 or done == total:
@@ -31,7 +39,9 @@ def main():
     for e in r["error_ids"]:
         print("  data nahi mila:", e)
     if r["fetched"] and r["errors"] == r["fetched"]:
-        print("Sab products me error aaya - Myntra is computer/server ko block kar raha ho sakta hai.")
+        print("Sab products me error aaya - Myntra is server ko block kar raha hai (403 = block).")
+        print("Fix: GitHub secret MYNTRA_PROXY me koi India proxy daalo (http://user:pass@host:port).")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
