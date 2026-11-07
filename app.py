@@ -196,7 +196,7 @@ elif view_mode == "📈 Product Trend Analysis":
                 
                 price_val = prod_row[p_col].values[0] if p_col in prod_row.columns else None
                 star_val = prod_row[s_col].values[0] if s_col in prod_row.columns else None
-                rev_val = prod_row[r_col].values[0] if prod_row.columns else None
+                rev_val = prod_row[r_col].values[0] if r_col in prod_row.columns else None
                 
                 p_num = float(re.sub(r'[^0-9.]', '', str(price_val))) if pd.notna(price_val) and re.sub(r'[^0-9.]', '', str(price_val)) else None
                 
