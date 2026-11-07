@@ -91,11 +91,6 @@ if st.sidebar.button("🔄 Refresh & Clear Cache"):
 
 st.sidebar.markdown("---")
 
-# Metrics multiselect filter in sidebar
-st.sidebar.subheader("🎯 Metric Filters")
-all_metrics = ["SELLING PRICE", "STAR", "REVIEWS", "OUT OF STOCK", "SELLERS"]
-selected_metrics = st.sidebar.multiselect("Select Metrics to Show", options=all_metrics, default=all_metrics)
-
 cols = list(df.columns)
 dates = []
 
@@ -114,12 +109,16 @@ view_mode = st.sidebar.radio("Navigation", ["📊 Clean Price & Stock Table", "�
 if view_mode == "📊 Clean Price & Stock Table":
     st.subheader("📊 Clean Product Price & History Table")
     
-    col1, col2, col3 = st.columns(3)
+    # 4 columns for main screen filters side-by-side
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         search_query = st.text_input("🔍 Search (Style ID, Seller, Size, etc.)", "")
     with col2:
         selected_dates = st.multiselect("📅 Filter by Date Columns", options=dates, default=dates[-1:] if dates else [])
     with col3:
+        all_metrics = ["SELLING PRICE", "STAR", "REVIEWS", "OUT OF STOCK", "SELLERS"]
+        selected_metrics = st.multiselect("🎯 Select Metrics to Show", options=all_metrics, default=all_metrics)
+    with col4:
         stock_filter = st.selectbox("📦 Stock Status Filter", ["All", "In Stock (NONE)", "Out of Stock (ALL)"])
         
     filtered_df = df.copy()
@@ -137,7 +136,6 @@ if view_mode == "📊 Clean Price & Stock Table":
             for col in df.columns:
                 if d in str(col):
                     col_upper = str(col).upper()
-                    # Check if metric matches user selection
                     is_matched = False
                     if "STAR" in col_upper and "STAR" in selected_metrics:
                         is_matched = True
