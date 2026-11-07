@@ -45,7 +45,10 @@ def main():
         print("Style ID Link column nahi mila!")
         return
 
-    print("Products check ho rahe hain aur direct CDN photo links generate ki ja rahi hain...")
+    print("Products process ho rahe hain...")
+    
+    # Batch update list
+    photo_updates = []
     
     for idx, row in enumerate(all_rows[1:], start=2):
         current_photo = row[photo_col_idx - 1].strip() if len(row) >= photo_col_idx else ""
@@ -57,11 +60,19 @@ def main():
             if numbers:
                 style_id = numbers[-1]
                 img_url = f"https://assets.myntassets.com/h_720,q_90,w_540/v1/assets/images/{style_id}/default/image.jpg"
-                
-                sheet.update_cell(idx, photo_col_idx, img_url)
-                print(f"Updated photo for row {idx} -> Style ID: {style_id}")
+                photo_updates.append({"row": idx, "col": photo_col_idx, "val": img_url})
 
-    print("Tracker script successfully run ho gayi hai!")
+    if photo_updates:
+        print(f"Total {len(photo_updates)} photos update karni hain. Batch write start ho raha hai...")
+        # Single cell update ki jagah batch update (1 single API call)
+        cell_list = []
+        for item in photo_updates:
+            cell_list.append(gspread.Cell(item["row"], item["col"], item["val"]))
+            
+        sheet.update_cells(cell_list)
+        print("Saari photos ek saath Google Sheet me update ho gayi hain!")
+    else:
+        print("Koi naye photo links update karne ki zaroorat nahi thi.")
 
 if __name__ == "__main__":
     main()
